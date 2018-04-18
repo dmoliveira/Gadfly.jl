@@ -1,23 +1,24 @@
+const NumericalOrCategoricalAesthetic =
+    Union{(Void), Vector, DataArray, IndirectArray}
 
+const CategoricalAesthetic =
+    Union{(Void), IndirectArray}
 
-typealias NumericalOrCategoricalAesthetic
-    @compat(Union{(@compat Void), Vector, DataArray, PooledDataArray})
-
-typealias CategoricalAesthetic
-    @compat(Union{(@compat Void), PooledDataArray})
-
-typealias NumericalAesthetic
-    @compat(Union{(@compat Void), Matrix, Vector, DataArray})
+const NumericalAesthetic =
+    Union{(Void), Matrix, Vector, DataArray}
 
 
 @varset Aesthetics begin
-    x,            @compat(Union{NumericalOrCategoricalAesthetic, Distribution})
-    y,            @compat(Union{NumericalOrCategoricalAesthetic, Distribution})
-    z,            @compat(Union{(@compat Void), Function, Matrix})
-    size,         Maybe(Vector{Measure})
-    shape,        CategoricalAesthetic
-    color,        Maybe(@compat(Union{AbstractVector{RGBA{Float32}},
-                              AbstractVector{RGB{Float32}}}))
+    x,            Union{NumericalOrCategoricalAesthetic, Distribution}
+    y,            Union{NumericalOrCategoricalAesthetic, Distribution}
+    z,            Union{(Void), Function, Matrix}
+    xend,         NumericalAesthetic
+    yend,         NumericalAesthetic
+
+    size,         Union{CategoricalAesthetic,Vector,Void}
+    shape,        Union{CategoricalAesthetic,Vector,Void}
+    color,        Union{CategoricalAesthetic,Vector,Void}
+
     label,        CategoricalAesthetic
     group,        CategoricalAesthetic
 
@@ -33,6 +34,8 @@ typealias NumericalAesthetic
     # fixed lines
     xintercept,   NumericalAesthetic
     yintercept,   NumericalAesthetic
+    intercept,    NumericalAesthetic
+    slope,        NumericalAesthetic
 
     # boxplots
     middle,       NumericalAesthetic
@@ -102,7 +105,7 @@ end
 
 # Alternate aesthetic names
 const aesthetic_aliases =
-    @compat Dict{Symbol, Symbol}(:colour        => :color,
+    Dict{Symbol, Symbol}(:colour        => :color,
                                  :x_min         => :xmin,
                                  :x_max         => :xmax,
                                  :y_min         => :ymin,
@@ -122,18 +125,14 @@ const aesthetic_aliases =
 
 
 # Index as if this were a data frame
-function getindex(aes::Aesthetics, i::Integer, j::AbstractString)
-    getfield(aes, symbol(j))[i]
-end
+getindex(aes::Aesthetics, i::Integer, j::AbstractString) = getfield(aes, Symbol(j))[i]
 
 
 # Return the set of variables that are non-nothing.
 function defined_aesthetics(aes::Aesthetics)
     vars = Set{Symbol}()
     for name in fieldnames(Aesthetics)
-        if !is(getfield(aes, name), nothing)
-            push!(vars, name)
-        end
+        getfield(aes, name) === nothing || push!(vars, name)
     end
     vars
 end
@@ -149,54 +148,34 @@ end
 #   aes: An Aesthetics object.
 #   vars: Symbol that must be defined in the aesthetics.
 #
-function undefined_aesthetics(aes::Aesthetics, vars::Symbol...)
-    setdiff(Set(vars), defined_aesthetics(aes))
-end
-
+undefined_aesthetics(aes::Aesthetics, vars::Symbol...) =
+        setdiff(Set(vars), defined_aesthetics(aes))
 
 function assert_aesthetics_defined(who::AbstractString, aes::Aesthetics, vars::Symbol...)
     undefined_vars = undefined_aesthetics(aes, vars...)
-    if !isempty(undefined_vars)
-        error(@sprintf("The following aesthetics are required by %s but are not defined: %s\n",
-                       who, join(undefined_vars, ", ")))
-    end
+    isempty(undefined_vars) || error("The following aesthetics are required by ",who,
+            " but are not defined: ", join(undefined_vars,", "),"\n")
 end
-
 
 function assert_aesthetics_undefined(who::AbstractString, aes::Aesthetics, vars::Symbol...)
     defined_vars = intersect(Set(vars), defined_aesthetics(aes))
-    if !isempty(defined_vars)
-        error(@sprintf("The following aesthetics are defined but incompatible with %s: %s\n",
-                       who, join(undefined_vars, ", ")))
-    end
+    isempty(defined_vars) || error("The following aesthetics are defined but incompatible with ",
+            who,": ",join(defined_vars,", "),"\n")
 end
 
-
 function assert_aesthetics_equal_length(who::AbstractString, aes::Aesthetics, vars::Symbol...)
-    defined_vars = filter(var -> !(getfield(aes, var) === nothing), vars)
+    defined_vars = Compat.Iterators.filter(var -> !(getfield(aes, var) === nothing), vars)
 
     if !isempty(defined_vars)
         n = length(getfield(aes, first(defined_vars)))
         for var in defined_vars
-            if length(getfield(aes, var)) != n
-                error(@sprintf("The following aesthetics are required by %s to be of equal length: %s\n",
-                               who, join(defined_vars, ", ")))
-            end
+            length(getfield(aes, var)) != n && error(
+                    "The following aesthetics are required by ",who,
+                    " to be of equal length: ",join(defined_vars,", "),"\n")
         end
     end
     nothing
 end
-
-
-# Create a shallow copy of an Aesthetics instance.
-#
-# Args:
-#   a: aesthetics to copy
-#
-# Returns:
-#   Copied aesthetics.
-#
-copy(a::Aesthetics) = Aesthetics(a)
 
 
 # Replace values in a with non-nothing values in b.
@@ -211,11 +190,8 @@ copy(a::Aesthetics) = Aesthetics(a)
 #
 function update!(a::Aesthetics, b::Aesthetics)
     for name in fieldnames(Aesthetics)
-        if issomething(getfield(b, name))
-            setfield(a, name, getfield(b, name))
-        end
+        issomething(getfield(b, name)) && setfield(a, name, getfield(b, name))
     end
-
     nothing
 end
 
@@ -228,9 +204,7 @@ end
 # Returns:
 #   JSON data as a string.
 #
-function json(a::Aesthetics)
-    join([string(a, ":", json(getfield(a, var))) for var in aes_vars], ",\n")
-end
+json(a::Aesthetics) = join([string(a, ":", json(getfield(a, var))) for var in aes_vars], ",\n")
 
 
 # Concatenate aesthetics.
@@ -270,52 +244,35 @@ function concat(aess::Aesthetics...)
 end
 
 
-cat_aes_var!(a::(@compat Void), b::(@compat Void)) = a
-cat_aes_var!(a::(@compat Void), b) = copy(b)
-cat_aes_var!(a, b::(@compat Void)) = a
+cat_aes_var!(a::(Void), b::(Void)) = a
+cat_aes_var!(a::(Void), b::Union{Function,AbstractString}) = b
+cat_aes_var!(a::(Void), b) = copy(b)
+cat_aes_var!(a, b::(Void)) = a
 cat_aes_var!(a::Function, b::Function) = a === string || a == showoff ? b : a
-
 
 function cat_aes_var!(a::Dict, b::Dict)
     merge!(a, b)
     a
 end
 
-
-function cat_aes_var!{T <: Base.Callable}(a::AbstractArray{T}, b::AbstractArray{T})
-    return append!(a, b)
-end
-
-
-function cat_aes_var!{T <: Base.Callable, U <: Base.Callable}(a::AbstractArray{T}, b::AbstractArray{U})
-    return append!(a, b)
-end
-
+cat_aes_var!(a::AbstractArray{T}, b::AbstractArray{T}) where {T <: Base.Callable} = append!(a, b)
+cat_aes_var!(a::AbstractArray{T}, b::AbstractArray{U}) where {T <: Base.Callable, U <: Base.Callable} =
+        a=[promote(a..., b...)...]
 
 # Let arrays of numbers clobber arrays of functions. This is slightly odd
 # behavior, comes up with with function statistics applied on a layer-wise
 # basis.
-function cat_aes_var!{T <: Base.Callable, U}(a::AbstractArray{T}, b::AbstractArray{U})
-    return b
-end
+cat_aes_var!(a::AbstractArray{T}, b::AbstractArray{U}) where {T <: Base.Callable, U} = b
+cat_aes_var!(a::AbstractArray{T}, b::AbstractArray{U}) where {T, U <: Base.Callable} = a
+cat_aes_var!(a::AbstractArray{T}, b::AbstractArray{T}) where {T} = append!(a, b)
+cat_aes_var!(a, b) = a
 
-
-function cat_aes_var!{T, U <: Base.Callable}(a::AbstractArray{T}, b::AbstractArray{U})
-    return a
-end
-
-
-function cat_aes_var!{T}(a::AbstractArray{T}, b::AbstractArray{T})
-    return append!(a, b)
-end
-
-
-function cat_aes_var!{T, U}(a::AbstractArray{T}, b::AbstractArray{U})
+function cat_aes_var!(a::AbstractArray{T}, b::AbstractArray{U}) where {T, U}
     V = promote_type(T, U)
     if isa(a, DataArray) || isa(b, DataArray)
         ab = DataArray(V, length(a) + length(b))
     else
-        ab = Array(V, length(a) + length(b))
+        ab = Array{V}(length(a) + length(b))
     end
     i = 1
     for x in a
@@ -330,26 +287,11 @@ function cat_aes_var!{T, U}(a::AbstractArray{T}, b::AbstractArray{U})
     return ab
 end
 
-
-function cat_aes_var!(a, b)
-    a
+function cat_aes_var!(xs::IndirectArray{T,1}, ys::IndirectArray{S,1}) where {T, S}
+    TS = promote_type(T, S)
+    return append!(IndirectArray(xs.index, Array{TS}(xs.values)),
+                   IndirectArray(ys.index, Array{TS}(ys.values)))
 end
-
-
-function cat_aes_var!{T}(xs::PooledDataVector{T}, ys::PooledDataVector{T})
-    newpool = T[x for x in union(Set(xs.pool), Set(ys.pool))]
-    newdata = vcat(T[x for x in xs], T[y for y in ys])
-    PooledDataArray(newdata, newpool, [false for _ in newdata])
-end
-
-
-function cat_aes_var!{T, U}(xs::PooledDataVector{T}, ys::PooledDataVector{U})
-    V = promote_type(T, U)
-    newpool = V[x for x in union(Set(xs.pool), Set(ys.pool))]
-    newdata = vcat(V[x for x in xs], V[y for y in ys])
-    PooledDataArray(newdata, newpool, [false for _ in newdata])
-end
-
 
 # Summarizing aesthetics
 
@@ -365,10 +307,9 @@ end
 #   A Array{Aesthetics} of size max(1, length(xgroup)) by
 #   max(1, length(ygroup))
 #
-function by_xy_group{T <: @compat(Union{Data, Aesthetics})}(aes::T, xgroup, ygroup,
-                                                   num_xgroups, num_ygroups)
-    @assert xgroup === nothing || ygroup === nothing ||
-            length(xgroup) == length(ygroup)
+function by_xy_group(aes::T, xgroup, ygroup,
+                     num_xgroups, num_ygroups) where T <: Union{Data, Aesthetics}
+    @assert xgroup === nothing || ygroup === nothing || length(xgroup) == length(ygroup)
 
     n = num_ygroups
     m = num_xgroups
@@ -376,22 +317,20 @@ function by_xy_group{T <: @compat(Union{Data, Aesthetics})}(aes::T, xgroup, ygro
     xrefs = xgroup === nothing ? [1] : xgroup
     yrefs = ygroup === nothing ? [1] : ygroup
 
-    aes_grid = Array(T, n, m)
-    staging = Array(AbstractArray, n, m)
+    aes_grid = Array{T}(n, m)
+    staging = Array{AbstractArray}(n, m)
     for i in 1:n, j in 1:m
         aes_grid[i, j] = T()
     end
 
-    if is(xgroup, nothing) && is(ygroup, nothing)
-        return aes_grid
-    end
+    xgroup === nothing && ygroup === nothing && return aes_grid
 
-    function make_pooled_data_array{T, U, V}(::Type{PooledDataArray{T,U,V}},
-                                             arr::AbstractArray)
-        PooledDataArray(convert(Array{T}, arr))
+    function make_pooled_array(::Type{IndirectArray{T,N,A,V}}, arr::AbstractArray) where {T,N,A,V}
+        uarr = unique(arr)
+        return IndirectArray(A(indexin(arr, uarr)), V(uarr))
     end
-    make_pooled_data_array{T, U, V}(::Type{PooledDataArray{T,U,V}},
-                                    arr::PooledDataArray{T, U, V}) = arr
+    make_pooled_array(::Type{IndirectArray{T,R,N,RA}},
+            arr::IndirectArray{T,R,N,RA}) where {T,R,N,RA} = arr
 
     for var in fieldnames(T)
         # Skipped aesthetics. Don't try to partition aesthetics for which it
@@ -407,28 +346,28 @@ function by_xy_group{T <: @compat(Union{Data, Aesthetics})}(aes::T, xgroup, ygro
 
         vals = getfield(aes, var)
         if typeof(vals) <: AbstractArray
-            if !is(xgroup, nothing) && length(vals) != length(xgroup) ||
-               !is(ygroup, nothing) && length(vals) != length(ygroup)
-                error("Aesthetic $(var) must be the same length as xgroup or ygroup")
+            if xgroup !== nothing && length(vals) !== length(xgroup) ||
+               ygroup !== nothing && length(vals) !== length(ygroup)
+                continue
             end
 
             for i in 1:n, j in 1:m
                 staging[i, j] = similar(vals, 0)
             end
 
-            for (i, j, v) in zip(Iterators.cycle(yrefs), Iterators.cycle(xrefs), vals)
+            for (i, j, v) in zip(Compat.Iterators.cycle(yrefs), Compat.Iterators.cycle(xrefs), vals)
                 push!(staging[i, j], v)
             end
 
             for i in 1:n, j in 1:m
-                if typeof(vals) <: PooledDataArray
+                if typeof(vals) <: IndirectArray
                     setfield!(aes_grid[i, j], var,
-                              make_pooled_data_array(typeof(vals), staging[i, j]))
+                              make_pooled_array(typeof(vals), staging[i, j]))
                 else
                     if !applicable(convert, typeof(vals), staging[i, j])
-                        T = eltype(vals)
-                        if T <: Color T = Color end
-                        da = DataArray(T, length(staging[i, j]))
+                        T2 = eltype(vals)
+                        if T2 <: Color T2 = Color end
+                        da = DataArray(T2, length(staging[i, j]))
                         copy!(da, staging[i, j])
                         setfield!(aes_grid[i, j], var, da)
                     else
@@ -465,13 +404,9 @@ function inherit!(a::Aesthetics, b::Aesthetics;
         elseif aval === nothing || aval === string || aval == showoff
             setfield!(a, field, bval)
         elseif field == :xviewmin || field == :yviewmin
-            if bval != nothing && (aval == nothing || aval > bval)
-                setfield!(a, field, bval)
-            end
+            bval != nothing && (aval == nothing || aval > bval) && setfield!(a, field, bval)
         elseif field == :xviewmax || field == :yviewmax
-            if bval != nothing && (aval == nothing || aval < bval)
-                setfield!(a, field, bval)
-            end
+            bval != nothing && (aval == nothing || aval < bval) && setfield!(a, field, bval)
         elseif typeof(aval) <: Dict && typeof(bval) <: Dict
             merge!(aval, getfield(b, field))
         end

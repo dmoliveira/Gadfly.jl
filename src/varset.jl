@@ -1,5 +1,3 @@
-
-
 # Generate large types where each field has a default value to which it's
 # initialized.
 
@@ -9,16 +7,18 @@ macro varset(name::Symbol, table)
 
     names = Any[]
     vars = Any[]
-    defaults = Any[]
+    parsed_vars = Any[]
     parameters = Any[]
     parameters_expr = Expr(:parameters)
+    inherit_parameters = Any[]
+    inherit_parameters_expr = Expr(:parameters)
 
     for row in table
-        if typeof(row) == Expr && row.head == :line
+        if isa(row, Expr) && row.head == :line
             continue
         end
 
-        if typeof(row) == Symbol
+        if isa(row, Symbol)
             var = row
             typ = :Any
             default = :nothing
@@ -28,47 +28,33 @@ macro varset(name::Symbol, table)
             typ = row.args[2]
             default = length(row.args) > 2 ? row.args[3] : :nothing
         else
-            error("Bad varset systax")
+            error("Bad varset syntax")
         end
 
         push!(names, var)
         push!(vars, :($(var)::$(typ)))
-        push!(defaults, default)
         push!(parameters, Expr(:kw, var, default))
-        parameters_expr = Expr(:parameters, parameters...)
+        push!(inherit_parameters, Expr(:kw, var, :(b.$var)))
+        if typ==:ColorOrNothing
+            push!(parsed_vars, :($(var)==nothing ? nothing : parse_colorant($(var))))
+        else
+            push!(parsed_vars, :($(var)))
+        end
     end
 
-    new_with_defaults = Expr(:call, :new, names...)
+    parameters_expr = Expr(:parameters, parameters...)
+    inherit_parameters_expr = Expr(:parameters, inherit_parameters...)
 
     ex =
     quote
-        type $(name)
+        mutable struct $(name)
             $(vars...)
-
-            function $(name)()
-                new($(defaults...))
-            end
-
-            function $(name)($(parameters_expr))
-                $(new_with_defaults)
-            end
-
-            # shallow copy constructor
-            function $(name)(a::$(name))
-                b = new()
-                for name in fieldnames($(name))
-                    setfield!(b, name, getfield(a, name))
-                end
-                b
-            end
         end
 
-        function copy(a::$(name))
-            $(name)(a)
-        end
+        $(name)($(parameters_expr)) = $(name)($(parsed_vars...))
+        $(name)($(inherit_parameters_expr), b::$name) = $(name)($(names...))
+        copy(a::$(name)) = $(name)(a)
     end
 
     esc(ex)
 end
-
-

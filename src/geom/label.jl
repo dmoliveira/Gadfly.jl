@@ -1,35 +1,27 @@
-
-immutable LabelGeometry <: Gadfly.GeometryElement
+struct LabelGeometry <: Gadfly.GeometryElement
     # One of :dynamic, :left, :right, :above, :below, :centered
     position::Symbol
 
     # If true, hide labels that can't be made to not-overlap during dynamic
-    # lael layout.
+    # label layout.
     hide_overlaps::Bool
 
     tag::Symbol
-
-    function LabelGeometry(;position=:dynamic, hide_overlaps::Bool=true, tag::Symbol=empty_tag)
-        new(position, hide_overlaps, tag)
-    end
 end
-
+LabelGeometry(; position=:dynamic, hide_overlaps=true, tag=empty_tag) = 
+        LabelGeometry(position, hide_overlaps, tag)
 
 element_aesthetics(::LabelGeometry) = [:x, :y, :label]
 
-
 default_statistic(::LabelGeometry) = Gadfly.Stat.identity()
 
-
 const label = LabelGeometry
-
 
 # True if two boxes overlap
 function overlaps(a::Absolute2DBox, b::Absolute2DBox)
     a.x0[1] + a.a[1] >= b.x0[1] && a.x0[1] <= b.x0[1] + b.a[1] &&
     a.x0[2] + a.a[2] >= b.x0[2] && a.x0[2] <= b.x0[2] + b.a[2]
 end
-
 
 # A deferred context function for labeling points in a plot. Optimizing label
 # placement depends on knowing the absolute size of the containing context.
@@ -57,7 +49,7 @@ function deferred_label_context(geom::LabelGeometry,
     # This should maybe go in theme? Or should we be using Aesthetics.size?
     padding = 2mm
 
-    point_positions = Array(AbsoluteVec2, 0)
+    point_positions = Array{AbsoluteVec2}(0)
     for (x, y) in zip(aes.x, aes.y)
         x = Compose.resolve_position(parent_box, units, parent_transform, Compose.x_measure(x))
         y = Compose.resolve_position(parent_box, units, parent_transform, Compose.y_measure(y))
@@ -78,7 +70,7 @@ function deferred_label_context(geom::LabelGeometry,
         push!(positions, Absolute2DBox((x, y), (text_width, text_height)))
     end
 
-    # TODO: use Aesthetics.size and/or theme.default_point_size
+    # TODO: use Aesthetics.size and/or theme.point_size
     for (x, y) in point_positions
         push!(positions, Absolute2DBox((x - 0.5mm, y - 0.5mm), (1.0mm, 1.0mm)))
         push!(extents, (1mm, 1mm))
@@ -102,7 +94,7 @@ function deferred_label_context(geom::LabelGeometry,
     # Checking for label overlaps is O(n^2). To mitigate these costs, we build a
     # sparse overlap matrix. This also costs O(n^2), but we only have to do it
     # once, rather than every iteration of annealing.
-    possible_overlaps = [Array(Int, 0) for _ in 1:length(positions)]
+    possible_overlaps = [Array{Int}(0) for _ in 1:length(positions)]
 
     # TODO: this whole thing would be much more effecient if we forbid from
     # the start labels that overlap points. We should be able to precompute
@@ -244,12 +236,14 @@ function deferred_label_context(geom::LabelGeometry,
 
     end
 
-    return compose!(
-        context(),
-        text([positions[i].x0[1] + extents[i][1]/2 + parent_box.x0[1] for i in 1:n],
-             [positions[i].x0[2] + extents[i][2]/2 + parent_box.x0[2] for i in 1:n],
+    return compose!(context(),
+        (context(), text([point_positions[i][1] + parent_box.x0[1] for i in 1:n],
+             [point_positions[i][2] + parent_box.x0[2] for i in 1:n],
              aes.label,
-             [hcenter], [vcenter]; tag=geom.tag),
+             [hcenter], [vcenter], [Rotation()],
+             [(positions[i].x0[1] - point_positions[i][1] + extents[i][1]/2,
+               positions[i].x0[2] - point_positions[i][2] + extents[i][2]/2) for i in 1:n],
+             tag=geom.tag), svgclass("marker")),
         visible(label_visibility),
         font(theme.point_label_font),
         fontsize(theme.point_label_font_size),
@@ -259,7 +253,7 @@ function deferred_label_context(geom::LabelGeometry,
 end
 
 
-const label_layouts = @compat Dict(
+const label_layouts = Dict(
     :left     => (hright,  vcenter, -2mm,  0mm),
     :right    => (hleft,   vcenter,  2mm,  0mm),
     :above    => (hcenter, vbottom,  0mm, -2mm),
@@ -283,12 +277,12 @@ function render(geom::LabelGeometry, theme::Gadfly.Theme, aes::Gadfly.Aesthetics
 
         hpos, vpos, xoff, yoff = label_layouts[geom.position]
 
-        return compose!(
-            context(),
-            text([Compose.x_measure(x) + xoff for x in aes.x],
-                 [Compose.y_measure(y) + yoff for y in aes.y],
+        return compose!(context(),
+            (context(), text([Compose.x_measure(x) for x in aes.x],
+                 [Compose.y_measure(y) for y in aes.y],
                  aes.label,
-                 [hpos], [vpos]; tag=geom.tag),
+                 [hpos], [vpos], [Rotation()], [(xoff,yoff)], tag=geom.tag),
+                 svgclass("marker")),
             font(theme.point_label_font),
             fontsize(theme.point_label_font_size),
             fill(theme.point_label_color),

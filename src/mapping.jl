@@ -1,64 +1,54 @@
-
-
 module Col
 
 using Compat
 using DataFrames
-import Iterators
+import IterTools
+import Base: ==
 
-
-immutable GroupedColumn
+struct GroupedColumn
     columns::Nullable{Vector}
 end
 
+Base.hash(colgroup::GroupedColumn, h::UInt64) = hash(colgroup.columns, h)
 
-function Base.hash(colgroup::GroupedColumn, h::UInt64)
-    return hash(colgroup.columns, h)
-end
-
-
-function Base.(:(==))(a::GroupedColumn, b::GroupedColumn)
+function ==(a::GroupedColumn, b::GroupedColumn)
     return (isnull(a.columns) && isnull(b.columns)) ||
         (!isnull(a.columns) && !isnull(b.columns) && get(a.columns) == get(b.columns))
 end
 
+Base.show(io::IO, gc::GroupedColumn) = print(io, "Column")
 
-function Base.show(io::IO, gc::GroupedColumn)
-    print(io, "Column")
-end
+index() = GroupedColumn(Nullable{Vector}())
 
+index(xs::T...) where {T <: (Union{Int, Symbol})} = GroupedColumn(Nullable(collect(T, xs)))
 
-function index()
-    return GroupedColumn(Nullable{Vector}())
-end
-
-
-function index{T <: (@compat Union{Int, Symbol})}(xs::T...)
-    return GroupedColumn(Nullable(collect(T, xs)))
-end
-
-
-immutable GroupedColumnValue
+struct GroupedColumnValue
     columns::Nullable{Vector}
 end
 
+Base.show(io::IO, gc::GroupedColumnValue) = print(io, "Column Value")
 
-function Base.show(io::IO, gc::GroupedColumnValue)
-    print(io, "Column Value")
-end
+value() = GroupedColumnValue(Nullable{Vector}())
 
-
-function value()
-    return GroupedColumnValue(Nullable{Vector}())
-end
-
-
-function value{T <: (@compat Union{Int, Symbol})}(xs::T...)
-    return GroupedColumnValue(Nullable(collect(T, xs)))
-end
-
+value(xs::T...) where {T <: (Union{Int, Symbol})} = GroupedColumnValue(Nullable(collect(T, xs)))
 
 end # module Col
+
+
+module Row
+
+using Compat
+
+# represent a row index correspondig to a set of columns
+struct GroupedColumnRowIndex
+    columns::Nullable{Vector}
+end
+
+index() = GroupedColumnRowIndex(Nullable{Vector}())
+
+index(xs::T...) where {T <: (Union{Int, Symbol})} = GroupedColumnRowIndex(Nullable(collect(T, xs)))
+
+end # module Row
 
 
 # Handle aesthetics aliases and warn about unrecognized aesthetics.
@@ -70,9 +60,7 @@ function cleanmapping(mapping::Dict)
     cleaned = Dict{Symbol, Any}()
     for (key, val) in mapping
         # skip the "order" pesudo-aesthetic, used to order layers
-        if key == :order
-            continue
-        end
+        key == :order && continue
 
         if haskey(aesthetic_aliases, key)
             key = aesthetic_aliases[key]
@@ -81,7 +69,7 @@ function cleanmapping(mapping::Dict)
             continue
         end
 
-        if val == Col.value || val == Col.index
+        if val == Col.value || val == Col.index || val == Row.index
             val = val()
         end
 
@@ -92,13 +80,13 @@ end
 
 
 # Type to contain fields produced by melting data (and to dispatch on)
-immutable MeltedData
+struct MeltedData
     data
     melted_data
-    indicators::Array
+    row_indicators::Array
+    col_indicators::Array
     colmap::Dict
 end
-
 
 function meltdata(U::AbstractDataFrame, colgroups_::Vector{Col.GroupedColumn})
     um, un = size(U)
@@ -147,7 +135,7 @@ function meltdata(U::AbstractDataFrame, colgroups_::Vector{Col.GroupedColumn})
             end
         end
 
-        push!(V, eltyp == Vector ? Array(eltyp, vm) : DataArray(eltyp, vm))
+        push!(V, eltyp == Vector ? Array{eltyp}(vm) : DataArray(eltyp, vm))
         name = gensym()
         push!(vnames, name)
         colmap[colgroup] = j
@@ -161,18 +149,20 @@ function meltdata(U::AbstractDataFrame, colgroups_::Vector{Col.GroupedColumn})
     end
 
     # Indicator columns for each colgroup
-    indicators = Array(Symbol, (vm, length(colgroups)))
+    col_indicators = Array{Symbol}(vm, length(colgroups))
+    row_indicators = Array{Int}(vm, length(colgroups))
 
     colidxs = [isnull(colgroup.columns) ? collect(allcolumns) : get(colgroup.columns)
                for colgroup in colgroups]
 
     vi = 1
     for ui in 1:um
-        for colidx in Iterators.product(colidxs...)
+        for colidx in IterTools.product(colidxs...)
             # copy grouped columns
             for (vj, uj) in enumerate(colidx)
                 V[vj][vi] = U[ui, uj]
-                indicators[vi, vj] = uj
+                col_indicators[vi, vj] = uj
+                row_indicators[vi, vj] = ui
             end
 
             # copy ungrouped columns
@@ -185,12 +175,42 @@ function meltdata(U::AbstractDataFrame, colgroups_::Vector{Col.GroupedColumn})
     end
 
     df = DataFrame(; collect(zip(vnames, V))...)
-    return MeltedData(U, df, indicators, colmap)
+    return MeltedData(U, df, row_indicators, col_indicators, colmap)
 end
 
 
-# TODO: The is too elaborate. All matrix melts should const of all column, and
-# we should reserve this elaborate melting logic for data frames.
+function meltdata(U::AbstractVector, colgroups_::Vector{Col.GroupedColumn})
+    colgroups = Set(colgroups_)
+
+    if length(colgroups) != 1 || !isnull(first(colgroups).columns)
+        # if every column is of the same length, treat it as a matrix
+        if length(Set([length(u for u in U)])) == 1
+            return meltdata(cat(2, U...), colgroups_)
+        end
+
+        # otherwise it doesn't make much sense
+        error("Col.index/Col.value can only be used without arguments when plotting an array of heterogenous arrays")
+    end
+    colgroup = first(colgroups)
+    colmap = Dict{Any, Int}()
+    colmap[colgroup] = 1
+
+    V = cat(1, U...)
+    col_indicators = Array{Int}(length(V))
+    row_indicators = Array{Int}(length(V))
+    k = 1
+    for i in 1:length(U)
+        for j in 1:length(U[i])
+            col_indicators[k] = i
+            row_indicators[k] = j
+            k += 1
+        end
+    end
+
+    return MeltedData(U, V, row_indicators, col_indicators, colmap)
+end
+
+
 function meltdata(U::AbstractMatrix, colgroups_::Vector{Col.GroupedColumn})
     um, un = size(U)
 
@@ -221,27 +241,27 @@ function meltdata(U::AbstractMatrix, colgroups_::Vector{Col.GroupedColumn})
     V = similar(U, (vm, vn))
 
     # Indicator columns for each colgroup
-    indicators = Array(Int, (vm, length(colgroups)))
+    col_indicators = Array{Int}((vm, length(colgroups)))
+    row_indicators = Array{Int}((vm, length(colgroups)))
 
     colidxs = [isnull(colgroup.columns) ? collect(allcolumns) : get(colgroup.columns)
                for colgroup in colgroups]
 
     vi = 1
-    for ui in 1:um
-        for colidx in Iterators.product(colidxs...)
-            # copy grouped columns
-            for (vj, uj) in enumerate(colidx)
-                V[vi, vj] = U[ui, uj]
-                indicators[vi, vj] = uj
-            end
-
-            # copy ungrouped columns
-            for (vj, uj) in enumerate(ungrouped_columns)
-                V[vi, vj + length(colgroups)] = U[ui, uj]
-            end
-
-            vi += 1
+    for ui in 1:um, colidx in IterTools.product(colidxs...)
+        # copy grouped columns
+        for (vj, uj) in enumerate(colidx)
+            V[vi, vj] = U[ui, uj]
+            col_indicators[vi, vj] = uj
+            row_indicators[vi, vj] = ui
         end
+
+        # copy ungrouped columns
+        for (vj, uj) in enumerate(ungrouped_columns)
+            V[vi, vj + length(colgroups)] = U[ui, uj]
+        end
+
+        vi += 1
     end
 
     # Map grouped and individual columns in U to columns in V
@@ -253,7 +273,7 @@ function meltdata(U::AbstractMatrix, colgroups_::Vector{Col.GroupedColumn})
         colmap[uj] = vj + length(colgroups)
     end
 
-    return MeltedData(U, V, indicators, colmap)
+    return MeltedData(U, V, row_indicators, col_indicators, colmap)
 end
 
 
@@ -263,29 +283,21 @@ evalmapping(source, arg::Function) = arg
 evalmapping(source, arg::Distribution) = arg
 
 evalmapping(source::AbstractDataFrame, arg::Symbol) = source[arg]
-evalmapping(source::AbstractDataFrame, arg::AbstractString) = evalmapping(source, symbol(arg))
+evalmapping(source::AbstractDataFrame, arg::AbstractString) = evalmapping(source, Symbol(arg))
 evalmapping(source::AbstractDataFrame, arg::Integer) = source[arg]
 evalmapping(source::AbstractDataFrame, arg::Expr) = with(source, arg)
 
-
-function evalmapping(source::MeltedData, arg::Integer)
-    return source.melted_data[:,source.colmap[arg]]
-end
-
-
-function evalmapping(source::MeltedData, arg::Col.GroupedColumn)
-    return source.indicators[:,source.colmap[arg]]
-end
-
-
-function evalmapping(source::MeltedData, arg::Col.GroupedColumnValue)
-    return source.melted_data[:,source.colmap[Col.GroupedColumn(arg.columns)]]
-end
-
-
-function evalmapping(source::MeltedData, arg::Colon)
-    return source.melted_data
-end
+evalmapping(source::MeltedData, arg::Integer) = source.melted_data[:,source.colmap[arg]]
+evalmapping(source::MeltedData, arg::Col.GroupedColumn) = source.col_indicators[:,source.colmap[arg]]
+evalmapping(source::MeltedData, arg::Col.GroupedColumnValue) =
+    source.melted_data[:,source.colmap[Col.GroupedColumn(arg.columns)]]
+evalmapping(source::MeltedData, arg::Row.GroupedColumnRowIndex) =
+    source.row_indicators[:,source.colmap[Col.GroupedColumn(arg.columns)]]
+evalmapping(source::MeltedData, arg::Symbol) =
+    source.melted_data[:,source.colmap[arg]]
+evalmapping(source::MeltedData, arg::AbstractString) =
+    source.melted_data[:,source.colmap[Symbol(arg)]]
+evalmapping(source::MeltedData, arg::Colon) = source.melted_data
 
 
 # Evalute aesthetic mappings producting a Data instance.
@@ -295,12 +307,12 @@ function evalmapping!(mapping::Dict, data_source, data::Data)
     for (k, v) in mapping
         if isa(v, Col.GroupedColumn)
             push!(colgroups, v)
-        elseif isa(v, Col.GroupedColumnValue)
+        elseif isa(v, Col.GroupedColumnValue) || isa(v, Row.GroupedColumnRowIndex)
             push!(colgroups, Col.GroupedColumn(v.columns))
         end
     end
 
-    if !isempty(colgroups)
+    if !isempty(colgroups) && !isa(data_source, MeltedData)
         data_source = meltdata(data_source, colgroups)
     end
 
@@ -311,4 +323,3 @@ function evalmapping!(mapping::Dict, data_source, data::Data)
 
     return data_source
 end
-

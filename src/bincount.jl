@@ -1,4 +1,3 @@
-
 # Optimization of bin counts for histograms, heatmaps, hexbin plots, etc.
 #
 # I'm using the penalized maximum-likelihood method proposed in
@@ -46,7 +45,7 @@ end
 # Sample enough values to decide whether we're effectively
 # continuous (defined as >90% of the sampled values are unique)
 # By looking at a subset we ensure this isn't a bottleneck
-function estimate_distinct_proportion{T}(values::AbstractArray{T})
+function estimate_distinct_proportion(values::AbstractArray{T}) where T
     uvalues = Set{T}()
     n_sampled = n_tried = 0
     while n_sampled < 15 && n_tried < length(values)
@@ -75,7 +74,7 @@ function bin!(bincounts::Vector, xs, x_min, binwidth, numbins)
         if !isconcrete(x)
             continue
         end
-        idx = 1 + @compat floor(Int, (x - x_min) / binwidth)
+        idx = 1 + floor(Int, (x - x_min) / binwidth)
         bincounts[min(numbins, idx)] += 1
     end
 end
@@ -253,8 +252,8 @@ function choose_bin_count_2d(xs::AbstractVector, ys::AbstractVector,
             continue
         end
 
-        i = max(1, min(dx, 1 + (@compat floor(Int, (x - x_min) / wx))))
-        j = max(1, min(dy, 1 + (@compat floor(Int, (y - y_min) / wy))))
+        i = max(1, min(dx, 1 + (floor(Int, (x - x_min) / wx))))
+        j = max(1, min(dy, 1 + (floor(Int, (y - y_min) / wy))))
         bincounts[j, i] += 1
     end
 
@@ -276,4 +275,3 @@ end
 function choose_hex_bin_count(xs::AbstractVector, ys::AbstractVector)
     # TODO: this should probably be a thing
 end
-

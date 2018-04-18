@@ -1,34 +1,23 @@
-
-
-immutable BeeswarmGeometry <: Gadfly.GeometryElement
+struct BeeswarmGeometry <: Gadfly.GeometryElement
     # :vertical or :horizontal
     orientation::Symbol
     padding::Measure
     tag::Symbol
-
-    function BeeswarmGeometry(; orientation::Symbol=:vertical,
-                                padding::Measure=0.1mm,
-                                tag::Symbol=empty_tag)
-        new(orientation, padding, tag)
-    end
 end
-
+BeeswarmGeometry(; orientation=:vertical, padding=0.1mm, tag=empty_tag) =
+        BeeswarmGeometry(orientation, padding, tag)
 
 const beeswarm = BeeswarmGeometry
 
-
-function element_aesthetics(geom::BeeswarmGeometry)
-    [:x, :y, :color]
-end
-
+element_aesthetics(geom::BeeswarmGeometry) = [:x, :y, :color]
 
 function render(geom::BeeswarmGeometry, theme::Gadfly.Theme, aes::Gadfly.Aesthetics)
     Gadfly.assert_aesthetics_defined("Geom.point", aes, :x, :y)
     Gadfly.assert_aesthetics_equal_length("Geom.point", aes,
                                           element_aesthetics(geom)...)
     default_aes = Gadfly.Aesthetics()
-    default_aes.color = PooledDataArray(RGBA{Float32}[theme.default_color])
-    default_aes.size = Measure[theme.default_point_size]
+    default_aes.color = discretize_make_ia(RGBA{Float32}[theme.default_color])
+    default_aes.size = Measure[theme.point_size]
     aes = inherit(aes, default_aes)
     padding = 1.0mm
 
@@ -53,13 +42,14 @@ function render(geom::BeeswarmGeometry, theme::Gadfly.Theme, aes::Gadfly.Aesthet
             permute!(aes.color, p)
         end
 
-        point_dist = (2*theme.default_point_size + geom.padding).value
-        offsets = Array(Length{:mm}, length(val))
-        positions = Array(Compose.Measure, length(val))
+        point_dist = (2*theme.point_size + geom.padding).value
+        point_dist += eps(point_dist)
+        offsets = Array{Length{:mm}}(length(val))
+        positions = Array{Compose.Measure}(length(val))
 
         n = length(val)
-        overlaps = Array(Bool, n)
-        absvals = Array(Float64, n)
+        overlaps = Array{Bool}(n)
+        absvals = Array{Float64}(n)
         for (i, v) in enumerate(val)
             absvals[i] = Compose.resolve_position(
                     draw_context.box,
@@ -139,12 +129,12 @@ function render(geom::BeeswarmGeometry, theme::Gadfly.Theme, aes::Gadfly.Aesthet
         end
 
         if geom.orientation == :horizontal
-            f = circle(val, positions, aes.size, geom.tag)
+            f = Shape.circle(val, positions, aes.size, geom.tag)
         else
-            f = circle(positions, val, aes.size, geom.tag)
+            f = Shape.circle(positions, val, aes.size, geom.tag)
         end
 
-        return compose(context(), f, fill(aes.color),
+        return compose(context(), f, fill(aes.color), svgclass("marker"),
                        linewidth(theme.highlight_width), stroke(nothing))
     end
 

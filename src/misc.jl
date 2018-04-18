@@ -1,34 +1,7 @@
 #Is this usable data?
-function isconcrete{T<:Number}(x::T)
-    !isna(x) && isfinite(x)
-end
-
-
-function isconcrete(x::(@compat Irrational))
-    return true
-end
-
-
-function isconcrete(x)
-    !isna(x)
-end
-
-
-function hasna(xs)
-    return false
-end
-
-
-function hasna(xs::AbstractDataArray)
-    for x in xs
-        if isna(x)
-            return true
-        end
-    end
-    return false
-end
-
-
+isconcrete(x::T) where {T<:Number} = !ismissing(x) && isfinite(x)
+isconcrete(x::(Irrational)) = true
+isconcrete(x) = !ismissing(x)
 
 function isallconcrete(xs)
     ans = true
@@ -59,9 +32,9 @@ function concretize(xss::AbstractVector...)
         @label next_j1
     end
 
-    yss = Array(AbstractVector, length(xss))
+    yss = Array{AbstractVector}(length(xss))
     for (i, xs) in enumerate(xss)
-        yss[i] = Array(eltype(xs), count)
+        yss[i] = Array{eltype(xs)}(count)
     end
 
     k = 1
@@ -95,7 +68,7 @@ function concrete_length(xs)
     n
 end
 
-function concrete_length{T}(xs::DataArray{T})
+function concrete_length(xs::DataArray{T}) where T
     n = 0
     for i = 1:length(xs)
         if !xs.na[i] && isconcrete(xs.data[i]::T)
@@ -105,7 +78,7 @@ function concrete_length{T}(xs::DataArray{T})
     n
 end
 
-function concrete_length(xs::Iterators.Chain)
+function concrete_length(xs::IterTools.Chain)
     n = 0
     for obj in xs.xss
         n += concrete_length(obj)
@@ -157,7 +130,7 @@ function concrete_maximum(xs)
 end
 
 
-function concrete_minmax{T<:Real}(xs, xmin::T, xmax::T)
+function concrete_minmax(xs, xmin::T, xmax::T) where T<:Real
     if eltype(xs) <: Base.Callable
         return xmin, xmax
     end
@@ -177,7 +150,7 @@ function concrete_minmax{T<:Real}(xs, xmin::T, xmax::T)
 end
 
 
-function concrete_minmax{T<:Real, TA}(xs::DataArray{TA}, xmin::T, xmax::T)
+function concrete_minmax(xs::DataArray{TA}, xmin::T, xmax::T) where {T<:Real, TA}
     for i = 1:length(xs)
         if !xs.na[i]
             x = xs.data[i]::TA
@@ -194,7 +167,7 @@ function concrete_minmax{T<:Real, TA}(xs::DataArray{TA}, xmin::T, xmax::T)
 end
 
 
-function concrete_minmax{T}(xs, xmin::T, xmax::T)
+function concrete_minmax(xs, xmin::T, xmax::T) where T
     for x in xs
         if isconcrete(x)
             xT = convert(T, x)
@@ -210,7 +183,7 @@ function concrete_minmax{T}(xs, xmin::T, xmax::T)
 end
 
 
-function concrete_minmax{T, TA}(xs::DataArray{TA}, xmin::T, xmax::T)
+function concrete_minmax(xs::DataArray{TA}, xmin::T, xmax::T) where {T, TA}
     for i = 1:length(xs)
         if !xs.na[i]
             x = xs.data[i]::TA
@@ -227,7 +200,7 @@ function concrete_minmax{T, TA}(xs::DataArray{TA}, xmin::T, xmax::T)
 end
 
 
-function concrete_minmax{T<:Real}(xs::Iterators.Chain, xmin::T, xmax::T)
+function concrete_minmax(xs::IterTools.Chain, xmin::T, xmax::T) where T<:Real
     for obj in xs.xss
         xmin, xmax = concrete_minmax(obj, xmin, xmax)
     end
@@ -235,28 +208,16 @@ function concrete_minmax{T<:Real}(xs::Iterators.Chain, xmin::T, xmax::T)
 end
 
 
-
-function nonzero_length(xs)
-    n = 0
-    for x in xs
-        if x != 0
-            n += 1
-        end
-    end
-    n
-end
-
-
 # Create a new object of type T from a with missing values (i.e., those set to
 # nothing) inherited from b.
-function inherit{T}(a::T, b::T)
+function inherit(a::T, b::T) where T
     c = copy(a)
     inherit!(c, b)
     c
 end
 
 
-function inherit!{T}(a::T, b::T)
+function inherit!(a::T, b::T) where T
     for field in fieldnames(T)
         aval = getfield(a, field)
         bval = getfield(b, field)
@@ -271,13 +232,13 @@ function inherit!{T}(a::T, b::T)
 end
 
 
-isnothing(u) = is(u, nothing)
+isnothing(u) = u === nothing
 issomething(u) = !isnothing(u)
 
 negate(f) = x -> !f(x)
 
 
-function has{T,N}(xs::AbstractArray{T,N}, y::T)
+function has(xs::AbstractArray{T,N}, y::T) where {T,N}
     for x in xs
         if x == y
             return true
@@ -286,12 +247,10 @@ function has{T,N}(xs::AbstractArray{T,N}, y::T)
     return false
 end
 
-Maybe(T) = @compat(Union{T, (@compat Void)})
+Maybe(T) = Union{T, (Void)}
 
 
-function lerp(x::Float64, a, b)
-    a + (b - a) * max(min(x, 1.0), 0.0)
-end
+lerp(x::Float64, a, b) = a + (b - a) * max(min(x, 1.0), 0.0)
 
 
 # Generate a unique id, primarily for assigning IDs to SVG elements.
@@ -315,7 +274,7 @@ end
 
 # Can a numerical value be treated as an integer
 is_int_compatable(::Integer) = true
-is_int_compatable{T <: AbstractFloat}(x::T) = abs(x) < maxintfloat(T) && float(int(x)) == x
+is_int_compatable(x::T) where {T <: AbstractFloat} = abs(x) < maxintfloat(T) && float(int(x)) == x
 is_int_compatable(::Any) = false
 
 
@@ -334,7 +293,7 @@ function evalfunc(f::Function, a, b, n)
     @assert n > 1
 
     step = (b - a) / (n - 1)
-    xs = Array(typeof(a + step), n)
+    xs = Array{typeof(a + step)}(n)
     for i in 1:n
         xs[i] = a + (i-1) * step
     end
@@ -369,121 +328,15 @@ function jsplotdata(key::AbstractString, value::AbstractString, arg::Vector{Meas
 end
 
 
-function svg_color_class_from_label(label::AbstractString)
-    return @sprintf("color_%s", escape_id(label))
-end
+svg_color_class_from_label(label::AbstractString) = @sprintf("color_%s", escape_id(label))
 
-
-"""
-A faster map function for PooledDataVector
-"""
-function pooled_map(T::Type, f::Function, xs::PooledDataVector)
-    newpool = T[f(x) for x in xs.pool]
-    return T[newpool[i] for i in xs.refs]
-end
-
-
-# TODO: Delete when 0.3 compatibility is dropped
-if VERSION < v"0.4-dev"
-    using Dates
-
-    function Showoff.showoff{T <: @compat(Union{Date, DateTime})}(ds::AbstractArray{T}, style=:none)
-        years = Set()
-        months = Set()
-        days = Set()
-        hours = Set()
-        minutes = Set()
-        seconds = Set()
-        for d in ds
-            push!(years, Dates.year(d))
-            push!(months, Dates.month(d))
-            push!(days, Dates.day(d))
-            push!(hours, Dates.hour(d))
-            push!(minutes, Dates.minute(d))
-            push!(seconds, Dates.second(d))
-        end
-        all_same_year         = length(years)   == 1
-        all_one_month         = length(months)  == 1 && 1 in months
-        all_one_day           = length(days)    == 1 && 1 in days
-        all_zero_hour         = length(hours)   == 1 && 0 in hours
-        all_zero_minute       = length(minutes) == 1 && 0 in minutes
-        all_zero_seconds      = length(minutes) == 1 && 0 in minutes
-        all_zero_milliseconds = length(minutes) == 1 && 0 in minutes
-
-        # first label format
-        label_months = false
-        label_days = false
-        f1 = "u d, yyyy"
-        f2 = ""
-        if !all_zero_seconds
-            f2 = "HH:MM:SS.sss"
-        elseif !all_zero_seconds
-            f2 = "HH:MM:SS"
-        elseif !all_zero_hour || !all_zero_minute
-            f2 = "HH:MM"
-        else
-            if !all_one_day
-                first_label_format = "u d yyyy"
-            elseif !all_one_month
-                first_label_format = "u yyyy"
-            elseif !all_one_day
-                first_label_format = "yyyy"
-            end
-        end
-        if f2 != ""
-            first_label_format = string(f1, " ", f2)
-        else
-            first_label_format = f1
-        end
-
-        labels = Array(AbstractString, length(ds))
-        labels[1] = Dates.format(ds[1], first_label_format)
-        d_last = ds[1]
-        for (i, d) in enumerate(ds[2:end])
-            if Dates.year(d) != Dates.year(d_last)
-                if all_one_day && all_one_month
-                    f1 = "yyyy"
-                elseif all_one_day && !all_one_month
-                    f1 = "u yyyy"
-                else
-                    f1 = "u d, yyyy"
-                end
-            elseif Dates.month(d) != Dates.month(d_last)
-                f1 = all_one_day ? "u" : "u d"
-            elseif Dates.day(d) != Dates.day(d_last)
-                f1 = "d"
-            else
-                f1 = ""
-            end
-
-            if f2 != ""
-                f = string(f1, " ", f2)
-            elseif f1 != ""
-                f = f1
-            else
-                f = first_label_format
-            end
-
-            labels[i+1] = Dates.format(d, f)
-            d_last = d
-        end
-
-        return labels
-    end
-else
-    using Base.Dates
-end
-
+using Base.Dates
 
 # Arbitrarily order colors
-function color_isless(a::Color, b::Color)
-    return color_isless(convert(RGB{Float32}, a), convert(RGB{Float32}, b))
-end
-
-
-function color_isless(a::TransparentColor, b::TransparentColor)
-    return color_isless(convert(RGBA{Float32}, a), convert(RGBA{Float32}, b))
-end
+color_isless(a::Color, b::Color) =
+        color_isless(convert(RGB{Float32}, a), convert(RGB{Float32}, b))
+color_isless(a::TransparentColor, b::TransparentColor) =
+        color_isless(convert(RGBA{Float32}, a), convert(RGBA{Float32}, b))
 
 
 function color_isless(a::RGB{Float32}, b::RGB{Float32})
@@ -514,8 +367,8 @@ function color_isless(a::RGBA{Float32}, b::RGBA{Float32})
 end
 
 
-function group_color_isless{S, T <: Colorant}(a::(@compat Tuple{S, T}),
-                                              b::(@compat Tuple{S, T}))
+function group_color_isless(a::(Tuple{S, T}),
+                            b::(Tuple{S, T})) where {S, T <: Colorant}
     if a[1] < b[1]
         return true
     elseif a[1] == b[1]
@@ -523,4 +376,43 @@ function group_color_isless{S, T <: Colorant}(a::(@compat Tuple{S, T}),
     else
         return false
     end
+end
+
+
+"""
+trim longer arrays to the size of the smallest one
+and zip the arrays.
+"""
+function trim_zip(xs...)
+    mx = max(map(length, xs)...)
+    mn = min(map(length, xs)...)
+    if mx == mn
+        zip(xs...)
+    else
+        zip([length(x) == mn ? x : x[1:mn] for x in xs]...)
+    end
+end
+
+# Convenience constructors of IndirectArrays
+discretize_make_ia(values::AbstractVector, levels) =
+    IndirectArray(Array{UInt8}(indexin(values, levels)), levels)
+discretize_make_ia(values::AbstractVector)         = discretize_make_ia(values, unique(values))
+discretize_make_ia(values::AbstractVector, ::Void) = discretize_make_ia(values)
+
+discretize_make_ia(values::IndirectArray)         = values
+discretize_make_ia(values::IndirectArray, ::Void) = values
+
+discretize_make_ia(values::CategoricalArray) =
+    discretize_make_ia(values, intersect(push!(levels(values), missing), unique(values)))
+discretize_make_ia(values::CategoricalArray, ::Void) = discretize_make_ia(values)
+function discretize_make_ia(values::CategoricalArray{T}, levels::Vector) where {T}
+    mapping = coalesce.(indexin(CategoricalArrays.index(values.pool), levels), 0)
+    unshift!(mapping, coalesce(findfirst(ismissing, levels), 0))
+    index = [mapping[x+1] for x in values.refs]
+    any(iszero, index) && throw(ArgumentError("values not in levels encountered"))
+    return IndirectArray(index, convert(Vector{T},levels))
+end
+function discretize_make_ia(values::CategoricalArray{T}, levels::CategoricalVector{T}) where T
+    _levels = map!(t -> ismissing(t) ? t : get(t), Vector{T}(length(levels)), levels)
+    discretize_make_ia(values, _levels)
 end

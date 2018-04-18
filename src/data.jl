@@ -1,10 +1,9 @@
-
-
-
 @varset Data begin
     x
     y
     z
+    xend
+    yend
     xmin
     xmax
     ymin
@@ -12,6 +11,8 @@
     width
     xintercept
     yintercept
+    intercept
+    slope
     middle
     lower_hinge
     upper_hinge
@@ -61,7 +62,7 @@ function chain(ds::Data...)
         if isempty(vs)
             setfield!(chained_data, name, nothing)
         else
-            setfield!(chained_data, name, Iterators.chain(vs...))
+            setfield!(chained_data, name, IterTools.chain(vs...))
         end
     end
 
@@ -80,4 +81,3 @@ function show(io::IO, data::Data)
     end
     print(io, "\n)\n")
 end
-

@@ -1,9 +1,7 @@
-
-VERSION >= v"0.4.0-dev+6641" && __precompile__()
+__precompile__()
 
 module Gadfly
 
-using Codecs
 using Colors
 using Compat
 using Compose
@@ -12,46 +10,72 @@ using DataFrames
 using DataStructures
 using JSON
 using Showoff
+using IndirectArrays
+using CategoricalArrays
 
-import Iterators
-import Iterators: distinct, drop, chain
-import Compose: draw, hstack, vstack, gridstack, isinstalled, parse_colorant, parse_colorant_vec
+import IterTools
+import IterTools: distinct, drop, chain
+import Compose: draw, hstack, vstack, gridstack, isinstalled, parse_colorant
 import Base: +, -, /, *,
              copy, push!, start, next, done, show, getindex, cat,
-             writemime, isfinite, display
+             show, isfinite, display
 import Distributions: Distribution
 
-export Plot, Layer, Theme, Col, Scale, Coord, Geom, Guide, Stat, render, plot,
-       layer, spy, set_default_plot_size, set_default_plot_format,
-       prepare_display
+export Plot, Layer, Theme, Col, Row, Scale, Coord, Geom, Guide, Stat, Shape, render, plot,
+       style, layer, spy, set_default_plot_size, set_default_plot_format, prepare_display
 
+@deprecate circle Shape.circle
+@deprecate square Shape.square
+@deprecate diamond Shape.diamond
+@deprecate cross Shape.cross
+@deprecate xcross Shape.xcross
+@deprecate utriangle Shape.utriangle
+@deprecate dtriangle Shape.dtriangle
+@deprecate star1 Shape.star1
+@deprecate star2 Shape.star2
+@deprecate hexagon Shape.hexagon
+@deprecate octogon Shape.octogon
+@deprecate hline Shape.hline
+@deprecate vline Shape.vline
 
 # Re-export some essentials from Compose
-export SVGJS, SVG, PGF, PNG, PS, PDF, draw, inch, mm, cm, px, pt, color, @colorant_str, vstack, hstack
+export SVGJS, SVG, PGF, PNG, PS, PDF, draw, inch, mm, cm, px, pt, color, @colorant_str, vstack, hstack, title, gridstack
 
 
 function __init__()
     # Define an XML namespace for custom attributes
     Compose.xmlns["gadfly"] = "http://www.gadflyjl.org/ns"
+    if haskey(ENV, "GADFLY_THEME")
+        theme = ENV["GADFLY_THEME"]
+        try
+            push_theme(Symbol(strip(theme)))
+        catch err
+            warn("Error loading Gadfly theme $theme (set by GADFLY_THEME env variable)")
+            show(err)
+        end
+    else
+        push_theme(Juno.isactive() ? :dark : :default)
+    end
 end
 
 
-typealias ColorOrNothing @compat(Union{Colorant, (@compat Void)})
+const ColorOrNothing = Union{Colorant, (Void)}
 
 element_aesthetics(::Any) = []
 input_aesthetics(::Any) = []
 output_aesthetics(::Any) = []
 default_scales(::Any) = []
+default_scales(x::Any, t) = default_scales(x)
 default_statistic(::Any) = Stat.identity()
 element_coordinate_type(::Any) = Coord.cartesian
 
 
-abstract Element
-abstract ScaleElement       <: Element
-abstract CoordinateElement  <: Element
-abstract GeometryElement    <: Element
-abstract GuideElement       <: Element
-abstract StatisticElement   <: Element
+abstract type Element end
+abstract type ScaleElement       <: Element end
+abstract type CoordinateElement  <: Element end
+abstract type GeometryElement    <: Element end
+abstract type GuideElement       <: Element end
+abstract type StatisticElement   <: Element end
 
 
 include("misc.jl")
@@ -59,62 +83,73 @@ include("ticks.jl")
 include("color_misc.jl")
 include("varset.jl")
 include("shapes.jl")
-include("theme.jl")
 include("data.jl")
 include("aesthetics.jl")
 include("mapping.jl")
+include("scale.jl")
+include("theme.jl")
 
 
 # The layer and plot functions can also take functions that are evaluated with
 # no arguments and are expected to produce an element.
-typealias ElementOrFunction{T <: Element} @compat(Union{Element, Base.Callable, Theme})
+const ElementOrFunction{T <: Element} = Union{Element, Base.Callable, Theme}
 
 const gadflyjs = joinpath(dirname(Base.source_path()), "gadfly.js")
 
 
 # Set prefereed canvas size when rendering a plot without an explicit call to
 # `draw`.
-function set_default_plot_size(width::Compose.MeasureOrNumber,
-                               height::Compose.MeasureOrNumber)
-    Compose.set_default_graphic_size(width, height)
-end
+"""
+```
+set_default_plot_size(width::Compose.MeasureOrNumber, height::Compose.MeasureOrNumber)
+```
+Sets preferred canvas size when rendering a plot without an explicit call to draw
+"""
+set_default_plot_size(width::Compose.MeasureOrNumber, height::Compose.MeasureOrNumber) =
+        Compose.set_default_graphic_size(width, height)
 
 
-function set_default_plot_format(fmt::Symbol)
-    Compose.set_default_graphic_format(fmt)
-end
+"""
+```
+set_default_plot_format(fmt::Symbol)
+```
+Sets the default plot format
+"""
+set_default_plot_format(fmt::Symbol) = Compose.set_default_graphic_format(fmt)
 
 
 # A plot has zero or more layers. Layers have a particular geometry and their
 # own data, which is inherited from the plot if not given.
-type Layer <: Element
-    data_source::@compat(Union{(@compat Void), MeltedData, AbstractMatrix, AbstractDataFrame})
+mutable struct Layer <: Element
+    data_source::Union{(Void), MeltedData, AbstractArray, AbstractDataFrame}
     mapping::Dict
     statistics::Vector{StatisticElement}
     geom::GeometryElement
-    theme::@compat(Union{(@compat Void), Theme})
+    theme::Union{(Void), Theme}
     order::Int
-
-    function Layer()
-        new(nothing, Dict(), StatisticElement[], Geom.nil(), nothing, 0)
-    end
-
-    function Layer(lyr::Layer)
-        new(lyr.data_source,
-            lyr.mapping,
-            lyr.statistics,
-            lyr.geom,
-            lyr.theme)
-    end
 end
-
-function copy(lyr::Layer)
-    lyr_new = Layer(lyr)
-end
-
+Layer() = Layer(nothing, Dict(), StatisticElement[], Geom.nil(), nothing, 0)
+Layer(l::Layer) = Layer(l.data_source, l.mapping, l.statistics, l.geom, l.theme, l.order)
+copy(l::Layer) = Layer(l)
 
 
-function layer(data_source::@compat(Union{AbstractDataFrame, (@compat Void)}),
+
+"""
+```
+layer(data_source::@compat(Union{AbstractDataFrame, (@compat Void)}),
+               elements::ElementOrFunction...; mapping...)
+```
+Creates layers based on elements
+
+### Args
+* data_source: The data source as a dataframe
+* elements: The elements
+* mapping: mapping
+
+### Returns
+An array of layers
+"""
+function layer(data_source::Union{AbstractDataFrame, (Void)},
                elements::ElementOrFunction...; mapping...)
     mapping = Dict{Symbol, Any}(mapping)
     lyr = Layer()
@@ -131,32 +166,27 @@ function layer(data_source::@compat(Union{AbstractDataFrame, (@compat Void)}),
 end
 
 
-function layer(elements::ElementOrFunction...; mapping...)
-    return layer(nothing, elements...; mapping...)
-end
+layer(elements::ElementOrFunction...; mapping...) =
+        layer(nothing, elements...; mapping...)
 
 
-function add_plot_element!{T<:Element}(lyrs::Vector{Layer}, arg::T)
-    error("Layers can't be used with elements of type $(typeof(arg))")
-end
+add_plot_element!(lyrs::Vector{Layer}, arg::T) where {T<:Element} =
+        error("Layers can't be used with elements of type $(typeof(arg))")
 
 
-function add_plot_element!(lyrs::Vector{Layer}, arg::ScaleElement)
-    error("Scales cannot be passed to layers, they must be specified at the plot level.")
-end
+add_plot_element!(lyrs::Vector{Layer}, arg::ScaleElement) =
+        error("Scales cannot be passed to layers, they must be specified at the plot level.")
 
 
 function add_plot_element!(lyrs::Vector{Layer}, arg::GeometryElement)
-    if ! is(lyrs[end].geom, Geom.nil())
+    if lyrs[end].geom !== Geom.nil()
         push!(lyrs, copy(lyrs[end]))
     end
     lyrs[end].geom = arg
 end
 
 
-function add_plot_element!(lyrs::Vector{Layer}, arg::Base.Callable)
-    add_plot_element!(lyrs, arg())
-end
+add_plot_element!(lyrs::Vector{Layer}, arg::Base.Callable) = add_plot_element!(lyrs, arg())
 
 
 function add_plot_element!(lyrs::Vector{Layer}, arg::StatisticElement)
@@ -166,38 +196,26 @@ function add_plot_element!(lyrs::Vector{Layer}, arg::StatisticElement)
 end
 
 
-function add_plot_element!(lyrs::Vector{Layer}, arg::Theme)
-    [lyr.theme = arg for lyr in lyrs]
-end
+add_plot_element!(lyrs::Vector{Layer}, arg::Theme) = [lyr.theme = arg for lyr in lyrs]
 
 
 # A full plot specification.
-type Plot
+mutable struct Plot
     layers::Vector{Layer}
-    data_source::@compat(Union{(@compat Void), MeltedData, AbstractMatrix, AbstractDataFrame})
+    data_source::Union{(Void), MeltedData, AbstractArray, AbstractDataFrame}
     data::Data
     scales::Vector{ScaleElement}
     statistics::Vector{StatisticElement}
-    coord::@compat(Union{(@compat Void), CoordinateElement})
+    coord::Union{(Void), CoordinateElement}
     guides::Vector{GuideElement}
     theme::Theme
     mapping::Dict
-
-    function Plot()
-        new(Layer[], nothing, Data(), ScaleElement[], StatisticElement[],
-            nothing, GuideElement[], default_theme)
-    end
 end
+Plot() = Plot(Layer[], nothing, Data(), ScaleElement[], StatisticElement[],
+      nothing, GuideElement[], current_theme(), Dict())
 
 
-function layers(p::Plot)
-    return p.layers
-end
-
-
-function add_plot_element!(p::Plot, arg::Function)
-    add_plot_element!(p, arg())
-end
+layers(p::Plot) = p.layers
 
 
 function add_plot_element!(p::Plot, arg::GeometryElement)
@@ -211,11 +229,6 @@ function add_plot_element!(p::Plot, arg::GeometryElement)
 end
 
 
-function add_plot_element!(p::Plot, arg::ScaleElement)
-    push!(p.scales, arg)
-end
-
-
 function add_plot_element!(p::Plot, arg::StatisticElement)
     if isempty(p.layers)
         push!(p.layers, Layer())
@@ -224,35 +237,14 @@ function add_plot_element!(p::Plot, arg::StatisticElement)
     push!(p.layers[end].statistics, arg)
 end
 
-
-function add_plot_element!(p::Plot, arg::CoordinateElement)
-    p.coord = arg
-end
-
-
-function add_plot_element!(p::Plot, arg::GuideElement)
-    push!(p.guides, arg)
-end
-
-
-function add_plot_element!(p::Plot, arg::Layer)
-    push!(p.layers, arg)
-end
-
-
-function add_plot_element!(p::Plot, arg::Vector{Layer})
-    append!(p.layers, arg)
-end
-
-
-function add_plot_element!{T <: Element}(p::Plot, f::Type{T})
-    add_plot_element!(p, f())
-end
-
-
-function add_plot_element!(p::Plot, theme::Theme)
-    p.theme = theme
-end
+add_plot_element!(p::Plot, arg::Function) = add_plot_element!(p, arg())
+add_plot_element!(p::Plot, arg::ScaleElement) = push!(p.scales, arg)
+add_plot_element!(p::Plot, arg::CoordinateElement) = p.coord = arg
+add_plot_element!(p::Plot, arg::GuideElement) = push!(p.guides, arg)
+add_plot_element!(p::Plot, arg::Layer) = push!(p.layers, arg)
+add_plot_element!(p::Plot, arg::Vector{Layer}) = append!(p.layers, arg)
+add_plot_element!(p::Plot, f::Type{T}) where {T <: Element} = add_plot_element!(p, f())
+add_plot_element!(p::Plot, theme::Theme) = p.theme = theme
 
 
 # Create a new plot.
@@ -276,9 +268,33 @@ end
 # because a call to layer() expands to a vector of layers (one for each Geom
 # supplied), we need to allow Vector{Layer} to count as an Element for the
 # purposes of plot().
-typealias ElementOrFunctionOrLayers @compat(Union{ElementOrFunction, Vector{Layer}})
+const ElementOrFunctionOrLayers = Union{ElementOrFunction, Vector{Layer}}
 
-function plot(data_source::@compat(Union{AbstractMatrix, AbstractDataFrame}),
+
+"""
+```
+    function plot(data_source::@compat(Union{AbstractMatrix, AbstractDataFrame}),
+              elements::ElementOrFunctionOrLayers...; mapping...)
+```
+
+Create a new plot.
+
+Grammar of graphics style plotting consists of specifying a dataset, one or
+more plot elements (scales, coordinates, geometries, etc), and binding of
+aesthetics to columns or expressions of the dataset.
+
+For example, a simple scatter plot would look something like:
+
+plot(my_data, Geom.point, x="time", y="price")
+
+Where "time" and "price" are the names of columns in my_data.
+
+### Args:
+* data_source: Data to be bound to aesthetics.
+* elements: Geometries, statistics, etc.
+* mapping: Aesthetics symbols (e.g. :x, :y, :color) mapped to names of columns in the data frame or other expressions.
+"""
+function plot(data_source::Union{AbstractArray, AbstractDataFrame},
               elements::ElementOrFunctionOrLayers...; mapping...)
     mappingdict = Dict{Symbol, Any}(mapping)
     return plot(data_source, mappingdict, elements...)
@@ -305,7 +321,26 @@ end
 # Returns:
 #   A Plot object.
 #
+"""
+```
 function plot(data_source::@compat(Union{(@compat Void), AbstractMatrix, AbstractDataFrame}),
+              mapping::Dict, elements::ElementOrFunctionOrLayers...)
+```
+The old fashioned (pre named arguments) version of plot.
+
+This version takes an explicit mapping dictionary, mapping aesthetics symbols
+to expressions or columns in the data frame.
+
+### Args:
+* data_source: Data to be bound to aesthetics.
+* mapping: Dictionary of aesthetics symbols (e.g. :x, :y, :color) to
+            names of columns in the data frame or other expressions.
+*   elements: Geometries, statistics, etc.
+
+### Returns:
+A Plot object.
+"""
+function plot(data_source::Union{(Void), AbstractArray, AbstractDataFrame},
               mapping::Dict, elements::ElementOrFunctionOrLayers...)
     mapping = cleanmapping(mapping)
     p = Plot()
@@ -365,14 +400,14 @@ function render_prepare(plot::Plot)
     # putting the layers in one subplot instead.
     if sum([isa(layer.geom, Geom.SubplotGeometry) for layer in plot.layers]) > 1
         error("""
-            Subplot geometries can not be used in multiple layers. Instead
-            use layers within one subplot geometry.
-            """)
+              Subplot geometries can not be used in multiple layers. Instead
+              use layers within one subplot geometry.
+              """)
     end
 
     # Process layers, filling inheriting mappings or data from the Plot where
     # they are missing.
-    datas = Array(Data, length(plot.layers))
+    datas = Array{Data}(length(plot.layers))
     for (i, layer) in enumerate(plot.layers)
         if layer.data_source === nothing && isempty(layer.mapping)
             layer.data_source = plot.data_source
@@ -391,6 +426,7 @@ function render_prepare(plot::Plot)
 
             evalmapping!(layer.mapping, layer.data_source, datas[i])
         end
+        if isa(layer.geom, Geom.Nil); layer.geom = Geom.point(); end # see #1062
     end
 
     # We need to process subplot layers somewhat as though they were regular
@@ -427,10 +463,10 @@ function render_prepare(plot::Plot)
     end
 
     # Add default statistics for geometries.
-    layer_stats = Array(Vector{StatisticElement}, length(plot.layers))
+    layer_stats = Array{Vector{StatisticElement}}(length(plot.layers))
     for (i, layer) in enumerate(plot.layers)
-        layer_stats[i] = isempty(layer.statistics) ?
-            [default_statistic(layer.geom)] : layer.statistics
+        layer_stats[i] = isempty(layer.statistics) ? ( isa(layer.geom, Geom.SubplotGeometry) ?
+                default_statistic(layer.geom) : [default_statistic(layer.geom)] ) : layer.statistics
     end
 
     # auto-enumeration: add Stat.x/y_enumerate when x and y is needed but only
@@ -443,10 +479,11 @@ function render_prepare(plot::Plot)
             union!(layer_defined_aes, output_aesthetics(stat))
         end
 
-        if :x in layer_needed_aes && :y in layer_needed_aes
-            if !(:x in layer_defined_aes)
+        if mapreduce(x->in(x,layer_needed_aes),|,[:x,:xmax,:xmin]) &&
+                mapreduce(y->in(y,layer_needed_aes),|,[:y,:ymax,:ymin])
+            if !mapreduce(x->in(x,layer_defined_aes),|,[:x,:xmax,:xmin])
                 unshift!(layer_stats[i], Stat.x_enumerate)
-            elseif !(:y in layer_defined_aes)
+            elseif !mapreduce(y->in(y,layer_defined_aes),|,[:y,:ymax,:ymin])
                 unshift!(layer_stats[i], Stat.y_enumerate)
             end
         end
@@ -457,10 +494,8 @@ function render_prepare(plot::Plot)
         union!(used_aesthetics, element_aesthetics(layer.geom))
     end
 
-    for stats in layer_stats
-        for stat in stats
-            union!(used_aesthetics, input_aesthetics(stat))
-        end
+    for stats in layer_stats, stat in stats
+        union!(used_aesthetics, input_aesthetics(stat))
     end
 
     mapped_aesthetics = Set(keys(plot.mapping))
@@ -469,10 +504,9 @@ function render_prepare(plot::Plot)
     end
 
     defined_unused_aesthetics = setdiff(mapped_aesthetics, used_aesthetics)
-    if !isempty(defined_unused_aesthetics)
-        warn("The following aesthetics are mapped, but not used by any geometry:\n    ",
-             join([string(a) for a in defined_unused_aesthetics], ", "))
-    end
+    isempty(defined_unused_aesthetics) ||
+            warn("The following aesthetics are mapped, but not used by any geometry:\n",
+                join([string(a) for a in defined_unused_aesthetics], ", "))
 
     scaled_aesthetics = Set{Symbol}()
     for scale in plot.scales
@@ -490,9 +524,18 @@ function render_prepare(plot::Plot)
 
     unscaled_aesthetics = setdiff(used_aesthetics, scaled_aesthetics)
 
+    _theme(plt, lyr) = lyr.theme == nothing ? plt.theme : lyr.theme
+
     # Add default scales for statistics.
-    for element in chain(plot.statistics, [l.geom for l in plot.layers], layer_stats...)
-        for scale in default_scales(element)
+    layer_stats_with_theme = map(plot.layers, layer_stats) do l, stats
+        map(s->(s, _theme(l, plot)), collect(stats))
+    end
+
+    for element in chain([(s, plot.theme) for s in plot.statistics],
+                         [(l.geom, _theme(plot, l)) for l in plot.layers],
+                         layer_stats_with_theme...)
+
+        for scale in default_scales(element...)
             # Use the statistics default scale only when it covers some
             # aesthetic that is not already scaled.
             scale_aes = Set(element_aesthetics(scale))
@@ -507,9 +550,7 @@ function render_prepare(plot::Plot)
 
     # Assign scales to mapped aesthetics first.
     for var in unscaled_aesthetics
-        if !in(var, mapped_aesthetics)
-            continue
-        end
+        in(var, mapped_aesthetics) || continue
 
         var_data = getfield(plot.data, var)
         if var_data == nothing
@@ -522,17 +563,11 @@ function render_prepare(plot::Plot)
             end
         end
 
-        if var_data == nothing
-            continue
-        end
+        var_data == nothing && continue
 
         t = classify_data(var_data)
-        if t == nothing
-
-        end
-
-        if haskey(default_aes_scales[t], var)
-            scale = default_aes_scales[t][var]
+        if scale_exists(t, var)
+            scale = get_scale(t, var, plot.theme)
             scale_aes = Set(element_aesthetics(scale))
             for var in scale_aes
                 scales[var] = scale
@@ -541,9 +576,7 @@ function render_prepare(plot::Plot)
     end
 
     for var in unscaled_aesthetics
-        if haskey(plot.mapping, var) || haskey(scales, var)
-            continue
-        end
+        (haskey(plot.mapping, var) || haskey(scales, var)) && continue
 
         t = :categorical
         for data in chain(datas, subplot_datas)
@@ -553,8 +586,8 @@ function render_prepare(plot::Plot)
             end
         end
 
-        if haskey(default_aes_scales[t], var)
-            scale = default_aes_scales[t][var]
+        if scale_exists(t, var)
+            scale = get_scale(t, var, plot.theme)
             scale_aes = Set(element_aesthetics(scale))
             for var in scale_aes
                 scales[var] = scale
@@ -585,32 +618,23 @@ function render_prepare(plot::Plot)
     end
 
     if !facet_plot
-        if !in(Guide.PanelBackground, explicit_guide_types)
-            push!(guides, Guide.background())
-        end
-
-        if !in(Guide.ZoomSlider, explicit_guide_types)
-            push!(guides, Guide.zoomslider())
-        end
-
-        if !in(Guide.XTicks, explicit_guide_types)
-            push!(guides, Guide.xticks())
-        end
-
-        if !in(Guide.YTicks, explicit_guide_types)
-            push!(guides, Guide.yticks())
-        end
+        in(Guide.PanelBackground, explicit_guide_types) || push!(guides, Guide.background())
+        in(Guide.QuestionMark, explicit_guide_types) || push!(guides, Guide.questionmark())
+        in(Guide.HelpScreen, explicit_guide_types) || push!(guides, Guide.helpscreen())
+        in(Guide.CrossHair, explicit_guide_types) || push!(guides, Guide.crosshair())
+        in(Guide.XTicks, explicit_guide_types) || push!(guides, Guide.xticks())
+        in(Guide.YTicks, explicit_guide_types) || push!(guides, Guide.yticks())
     end
 
     for guide in guides
         push!(statistics, default_statistic(guide))
     end
 
-    function mapped_and_used(vs)
-        any([in(v, mapped_aesthetics) && in(v, used_aesthetics) for v in vs])
+    mapped_and_used = function(vs)
+        any(Bool[in(v, mapped_aesthetics) && in(v, used_aesthetics) for v in vs])
     end
 
-    function choose_name(vs, fallback)
+    choose_name = function(vs, fallback)
         for v in vs
             if haskey(plot.data.titles, v)
                 return plot.data.titles[v]
@@ -649,7 +673,7 @@ function render_prepare(plot::Plot)
     end
 
     # I. Scales
-    layer_aess = Scale.apply_scales(Iterators.distinct(values(scales)),
+    layer_aess = Scale.apply_scales(IterTools.distinct(values(scales)),
                                     datas..., subplot_datas...)
 
     # set default labels
@@ -694,8 +718,8 @@ function render_prepare(plot::Plot)
     end
 
     # build arrays of scaled aesthetics for layers within subplots
-    layer_subplot_aess = Array(Vector{Aesthetics}, length(plot.layers))
-    layer_subplot_datas = Array(Vector{Data}, length(plot.layers))
+    layer_subplot_aess = Array{Vector{Aesthetics}}(length(plot.layers))
+    layer_subplot_datas = Array{Vector{Data}}(length(plot.layers))
     j = 1
     for (i, layer) in enumerate(plot.layers)
         layer_subplot_aess[i] = Aesthetics[]
@@ -714,6 +738,18 @@ function render_prepare(plot::Plot)
             scales, guides)
 end
 
+"""
+```
+render(plot::Plot)
+```
+Render a plot based on the Plot object
+
+### Args
+*   plot: Plot to be rendered.
+
+### Returns
+A Compose context containing the rendered plot.
+"""
 function render(plot::Plot)
     (plot, coord, plot_aes,
      layer_aess, layer_stats, layer_subplot_aess, layer_subplot_datas,
@@ -724,7 +760,7 @@ function render(plot::Plot)
                                    layer_subplot_datas,
                                    scales, guides)
 
-    ctx =  pad_inner(root_context, plot.theme.plot_padding)
+    ctx =  pad_inner(root_context, plot.theme.plot_padding...)
 
     if plot.theme.background_color != nothing
         compose!(ctx, (context(order=-1000000),
@@ -779,15 +815,16 @@ function render_prepared(plot::Plot,
     # IV. Geometries
     themes = Theme[layer.theme === nothing ? plot.theme : layer.theme
                    for layer in plot.layers]
+    zips = trim_zip(plot.layers, layer_aess,
+                                                   layer_subplot_aess,
+                                                   layer_subplot_datas,
+               themes)
 
     compose!(plot_context,
              [compose(context(order=layer.order), render(layer.geom, theme, aes,
                                                          subplot_aes, subplot_data,
                                                          scales))
-              for (layer, aes, subplot_aes, subplot_data, theme) in zip(plot.layers, layer_aess,
-                                                   layer_subplot_aess,
-                                                   layer_subplot_datas,
-                                                   themes)]...)
+              for (layer, aes, subplot_aes, subplot_data, theme) in zips]...)
 
     # V. Guides
     guide_contexts = Any[]
@@ -818,48 +855,115 @@ end
 
 
 # A convenience version of Compose.draw that let's you skip the call to render.
-function draw(backend::Compose.Backend, p::Plot)
-    draw(backend, render(p))
-end
+"""
+```
+draw(backend::Compose.Backend, p::Plot)
+```
+A convenience version of Compose.draw without having to call render
 
+### Args
+* backend: The Compose.Backend object
+* p: The Plot object
+"""
+draw(backend::Compose.Backend, p::Plot) = draw(backend, render(p))
+
+"""
+    title(ctx::Context, str::String, props::Property...) -> Context
+
+Add a title string to a group of plots, typically created with `vstack`, `hstack`, or `gridstack`.
+
+# Examples
+
+```
+p1 = plot(x=[1,2], y=[3,4], Geom.line);
+p2 = plot(x=[1,2], y=[4,3], Geom.line);
+title(hstack(p1,p2), "my latest data", Compose.fontsize(18pt), fill(colorant"red"))
+```
+"""
+title(ctx::Context, str::String, props::Compose.Property...) = vstack(
+    compose(context(0, 0, 1, 0.1), text(0.5, 1.0, str, hcenter, vbottom), props...),
+    compose(context(0, 0, 1, 0.9), ctx))
 
 # Convenience stacking functions
-vstack(ps::Plot...) = vstack(Context[render(p) for p in ps]...)
-vstack(ps::Vector{Plot}) = vstack(Context[render(p) for p in ps]...)
-vstack(p::Plot, c::Context) = vstack(render(p), c)
-vstack(c::Context, p::Plot) = vstack(c, render(p))
+"""
+    vstack(ps::Union{Plot,Context}...)
+    vstack(ps::Vector)
 
-hstack(ps::Plot...) = hstack(Context[render(p) for p in ps]...)
-hstack(ps::Vector{Plot}) = hstack(Context[render(p) for p in ps]...)
-hstack(p::Plot, c::Context) = hstack(render(p), c)
-hstack(c::Context, p::Plot) = hstack(c, render(p))
+Arrange plots into a vertical column.  Use `context()` as a placeholder for an empty panel.  Heterogeneous vectors must be typed.  See also `hstack`, `gridstack`, `subplot_grid`.
 
-gridstack(ps::Matrix{Plot}) = gridstack(map(render, ps))
+# Examples
 
-# writemime functions for all supported compose backends.
+```
+p1 = plot(x=[1,2], y=[3,4], Geom.line);
+p2 = Compose.context();
+vstack(p1, p2)
+vstack(Union{Plot,Compose.Context}[p1, p2])
+"""
+vstack(ps::Union{Plot,Context}...) = vstack([typeof(p)==Plot ? render(p) : p for p in ps]...)
+vstack(ps::Vector{Plot}) = vstack(ps...)
+vstack(ps::Vector{Union{Plot,Context}}) = vstack(ps...)
+
+"""
+    hstack(ps::Union{Plot,Context}...)
+    hstack(ps::Vector)
+
+Arrange plots into a horizontal row.  Use `context()` as a placeholder for an empty panel.  Heterogeneous vectors must be typed.  See also `vstack`, `gridstack`, `subplot_grid`.
+
+# Examples
+
+```
+p1 = plot(x=[1,2], y=[3,4], Geom.line);
+p2 = Compose.context();
+hstack(p1, p2)
+hstack(Union{Plot,Compose.Context}[p1, p2])
+"""
+hstack(ps::Union{Plot,Context}...) = hstack([typeof(p)==Plot ? render(p) : p for p in ps]...)
+hstack(ps::Vector{Plot}) = hstack(ps...)
+hstack(ps::Vector{Union{Plot,Context}}) = hstack(ps...)
+
+"""
+    gridstack(ps::Matrix{Union{Plot,Context}})
+
+Arrange plots into a rectangular array.  Use `context()` as a placeholder for an empty panel.  Heterogeneous matrices must be typed.  See also `hstack`, `vstack`.
+
+# Examples
+
+```
+p1 = plot(x=[1,2], y=[3,4], Geom.line);
+p2 = Compose.context();
+gridstack([p1 p1; p1 p1])
+gridstack(Union{Plot,Compose.Context}[p1 p2; p2 p1])
+```
+"""
+_gridstack(ps::Matrix) = gridstack(map(p->typeof(p)==Plot ? render(p) : p, ps))
+gridstack(ps::Matrix{Plot}) = _gridstack(ps)
+gridstack(ps::Matrix{Union{Plot,Context}}) = _gridstack(ps)
+
+# show functions for all supported compose backends.
 
 
-function writemime(io::IO, m::MIME"text/html", p::Plot)
+function show(io::IO, m::MIME"text/html", p::Plot)
     buf = IOBuffer()
     svg = SVGJS(buf, Compose.default_graphic_width,
                 Compose.default_graphic_height, false)
     draw(svg, p)
-    writemime(io, m, svg)
+    show(io, m, svg)
 end
 
 
-function writemime(io::IO, m::MIME"image/svg+xml", p::Plot)
+function show(io::IO, m::MIME"image/svg+xml", p::Plot)
     buf = IOBuffer()
     svg = SVG(buf, Compose.default_graphic_width,
               Compose.default_graphic_height, false)
     draw(svg, p)
-    writemime(io, m, svg)
+    show(io, m, svg)
 end
 
 
 try
     getfield(Compose, :Cairo) # throws if Cairo isn't being used
-    function writemime(io::IO, ::MIME"image/png", p::Plot)
+    global show
+    function show(io::IO, ::MIME"image/png", p::Plot)
         draw(PNG(io, Compose.default_graphic_width,
                  Compose.default_graphic_height), p)
     end
@@ -867,37 +971,16 @@ end
 
 try
     getfield(Compose, :Cairo) # throws if Cairo isn't being used
-    function writemime(io::IO, ::MIME"application/postscript", p::Plot)
+    global show
+    function show(io::IO, ::MIME"application/postscript", p::Plot)
         draw(PS(io, Compose.default_graphic_width,
-             Compose.default_graphic_height), p)
+             Compose.default_graphic_height), p);
     end
 end
 
-function writemime(io::IO, ::MIME"text/plain", p::Plot)
+function show(io::IO, ::MIME"text/plain", p::Plot)
     write(io, "Plot(...)")
 end
-
-# writemime for signals of Plots
-if isinstalled("Patchwork", v"0.1.2") && isinstalled("Reactive")
-
-    import Base: writemime
-    import Reactive: Signal, lift
-
-    if isdefined(Main, :IJulia)
-        import IJulia: metadata
-        metadata(::Signal{Plot}) = Dict()
-    end
-
-    function writemime(io::IO, m::MIME"text/html", ctx::Signal{Plot})
-        writemime(io, m, lift(c -> draw(
-            Patchable(
-                Compose.default_graphic_width,
-                Compose.default_graphic_height
-            ), c), ctx))
-    end
-
-end
-
 
 function default_mime()
     if Compose.default_graphic_format == :png
@@ -915,40 +998,51 @@ function default_mime()
     end
 end
 
-import Base.Multimedia: @try_display, xdisplayable
 import Base.REPL: REPLDisplay
 
-function display(p::Plot)
-    displays = Base.Multimedia.displays
-    for i = length(displays):-1:1
-        m = default_mime()
-        if xdisplayable(displays[i], m, p)
-             @try_display return display(displays[i], m, p)
-        end
+"""
+    display(p::Plot)
 
-        if xdisplayable(displays[i], p)
-            @try_display return display(displays[i], p)
-        end
+Render `p` to a multimedia display, typically an internet browser.
+
+This function is handy when rendering by `plot` has been suppressed
+with either trailing semi-colon or by calling it within a function.
+"""
+function display(d::REPLDisplay, p::Union{Plot,Compose.Context})
+    if mimewritable("text/html", p)
+        display(d,"text/html", p)
+        return
+    elseif mimewritable("image/png", p)
+        display(d,"image/png", p)
+        return
+    elseif mimewritable("application/pdf", p)
+        display(d,"application/pdf", p)
+        return
+    elseif mimewritable("image/svg+xml", p)
+        display(d,"image/svg+xml", p)
+        return
+    elseif mimewritable("application/postscript", p)
+        display(d,"application/postscript", p)
+        return
     end
-    invoke(display,(Any,),p)
+    throw(MethodError)
 end
 
-
 function open_file(filename)
-    if OS_NAME == :Darwin
+    if is_apple()
         run(`open $(filename)`)
-    elseif OS_NAME == :Linux || OS_NAME == :FreeBSD
+    elseif is_linux() || is_bsd()
         run(`xdg-open $(filename)`)
-    elseif OS_NAME == :Windows
+    elseif is_windows()
         run(`$(ENV["COMSPEC"]) /c start $(filename)`)
     else
-        warn("Showing plots is not supported on OS $(string(OS_NAME))")
+        warn("Showing plots is not supported on OS $(string(Compat.KERNEL))")
     end
 end
 
 # Fallback display method. When there isn't a better option, we write to a
 # temporary file and try to open it.
-function display(d::REPLDisplay, ::MIME"image/png", p::Plot)
+function display(d::REPLDisplay, ::MIME"image/png", p::Union{Plot,Compose.Context})
     filename = string(tempname(), ".png")
     output = open(filename, "w")
     draw(PNG(output, Compose.default_graphic_width,
@@ -957,7 +1051,7 @@ function display(d::REPLDisplay, ::MIME"image/png", p::Plot)
     open_file(filename)
 end
 
-function display(d::REPLDisplay, ::MIME"image/svg+xml", p::Plot)
+function display(d::REPLDisplay, ::MIME"image/svg+xml", p::Union{Plot,Compose.Context})
     filename = string(tempname(), ".svg")
     output = open(filename, "w")
     draw(SVG(output, Compose.default_graphic_width,
@@ -966,14 +1060,14 @@ function display(d::REPLDisplay, ::MIME"image/svg+xml", p::Plot)
     open_file(filename)
 end
 
-function display(d::REPLDisplay, ::MIME"text/html", p::Plot)
+function display(d::REPLDisplay, ::MIME"text/html", p::Union{Plot,Compose.Context})
     filename = string(tempname(), ".html")
     output = open(filename, "w")
 
     plot_output = IOBuffer()
     draw(SVGJS(plot_output, Compose.default_graphic_width,
                Compose.default_graphic_height, false), p)
-    plotsvg = takebuf_string(plot_output)
+    plotsvg = String(take!(plot_output))
 
     write(output,
         """
@@ -983,12 +1077,12 @@ function display(d::REPLDisplay, ::MIME"text/html", p::Plot)
             <title>Gadfly Plot</title>
             <meta charset="utf-8">
           </head>
-            <body>
+            <body style="margin:0">
             <script charset="utf-8">
-                $(readall(Compose.snapsvgjs))
+                $(readstring(Compose.snapsvgjs))
             </script>
             <script charset="utf-8">
-                $(readall(gadflyjs))
+                $(readstring(gadflyjs))
             </script>
 
             $(plotsvg)
@@ -999,7 +1093,7 @@ function display(d::REPLDisplay, ::MIME"text/html", p::Plot)
     open_file(filename)
 end
 
-function display(d::REPLDisplay, ::MIME"application/postscript", p::Plot)
+function display(d::REPLDisplay, ::MIME"application/postscript", p::Union{Plot,Compose.Context})
     filename = string(tempname(), ".ps")
     output = open(filename, "w")
     draw(PS(output, Compose.default_graphic_width,
@@ -1008,7 +1102,7 @@ function display(d::REPLDisplay, ::MIME"application/postscript", p::Plot)
     open_file(filename)
 end
 
-function display(d::REPLDisplay, ::MIME"application/pdf", p::Plot)
+function display(d::REPLDisplay, ::MIME"application/pdf", p::Union{Plot,Compose.Context})
     filename = string(tempname(), ".pdf")
     output = open(filename, "w")
     draw(PDF(output, Compose.default_graphic_width,
@@ -1017,8 +1111,22 @@ function display(d::REPLDisplay, ::MIME"application/pdf", p::Plot)
     open_file(filename)
 end
 
+# Display in Juno
 
-include("scale.jl")
+import Juno: Juno, @render, media, Media
+
+media(Plot, Media.Plot)
+
+@render Juno.PlotPane p::Plot begin
+    x, y = Juno.plotsize()
+    set_default_plot_size(x*Gadfly.px, y*Gadfly.px)
+    HTML(stringmime("text/html", p))
+end
+
+@render Juno.Editor p::Gadfly.Plot begin
+    Juno.icon("graph")
+end
+
 include("coord.jl")
 include("geometry.jl")
 include("guide.jl")
@@ -1028,64 +1136,99 @@ include("statistics.jl")
 # All aesthetics must have a scale. If none is given, we use a default.
 # The default depends on whether the input is discrete or continuous (i.e.,
 # PooledDataVector or DataVector, respectively).
-const default_aes_scales = @compat Dict{Symbol, Dict}(
-        :distribution => Dict{Symbol, Any}(:x => Scale.x_distribution(),
-                                           :y => Scale.y_distribution()),
-        :functional => Dict{Symbol, Any}(:z => Scale.z_func(),
-                                         :y => Scale.y_func()),
-        :numerical => Dict{Symbol, Any}(:x           => Scale.x_continuous(),
-                                        :xmin        => Scale.x_continuous(),
-                                        :xmax        => Scale.x_continuous(),
-                                        :xintercept  => Scale.x_continuous(),
-                                        :y           => Scale.y_continuous(),
-                                        :ymin        => Scale.y_continuous(),
-                                        :ymax        => Scale.y_continuous(),
-                                        :yintercept  => Scale.y_continuous(),
-                                        :middle      => Scale.y_continuous(),
-                                        :upper_fence => Scale.y_continuous(),
-                                        :lower_fence => Scale.y_continuous(),
-                                        :upper_hinge => Scale.y_continuous(),
-                                        :lower_hinge => Scale.y_continuous(),
-                                        :xgroup      => Scale.xgroup(),
-                                        :ygroup      => Scale.ygroup(),
-                                        :color       => Scale.color_continuous(),
-                                        :shape       => Scale.shape_discrete(),
-                                        :group       => Scale.group_discrete(),
-                                        :label       => Scale.label(),
-                                        :size        => Scale.size_continuous()),
-        :categorical => Dict{Symbol, Any}(:x          => Scale.x_discrete(),
-                                          :xmin       => Scale.x_discrete(),
-                                          :xmax       => Scale.x_discrete(),
-                                          :xintercept => Scale.x_discrete(),
-                                          :y          => Scale.y_discrete(),
-                                          :ymin       => Scale.y_discrete(),
-                                          :ymax       => Scale.y_discrete(),
-                                          :yintercept => Scale.y_discrete(),
-                                          :xgroup     => Scale.xgroup(),
-                                          :ygroup     => Scale.ygroup(),
-                                          :color      => Scale.color_discrete(),
-                                          :shape      => Scale.shape_discrete(),
-                                          :group      => Scale.group_discrete(),
-                                          :label      => Scale.label()))
+const default_aes_scales = Dict{Symbol, Dict}(
 
+    :distribution => Dict{Symbol, Any}(
+        :x => Scale.x_distribution(),
+        :y => Scale.y_distribution()
+    ),
+
+    :functional => Dict{Symbol, Any}(
+        :z      => Scale.z_func(),
+        :y      => Scale.y_func(),
+        :shape  => Scale.shape_identity(),
+        :size   => Scale.size_identity(),
+        :color  => Scale.color_identity(),
+    ),
+
+    :numerical => Dict{Symbol, Any}(
+        :x           => Scale.x_continuous(),
+        :xmin        => Scale.x_continuous(),
+        :xmax        => Scale.x_continuous(),
+        :xintercept  => Scale.x_continuous(),
+        :xslope      => Scale.x_continuous(),
+        :xend        => Scale.x_continuous(),
+        :yend        => Scale.y_continuous(),
+        :y           => Scale.y_continuous(),
+        :ymin        => Scale.y_continuous(),
+        :ymax        => Scale.y_continuous(),
+        :yintercept  => Scale.y_continuous(),
+        :yslope      => Scale.y_continuous(),
+        :middle      => Scale.y_continuous(),
+        :upper_fence => Scale.y_continuous(),
+        :lower_fence => Scale.y_continuous(),
+        :upper_hinge => Scale.y_continuous(),
+        :lower_hinge => Scale.y_continuous(),
+        :xgroup      => Scale.xgroup(),
+        :ygroup      => Scale.ygroup(),
+        :shape       => Scale.shape_discrete(),
+        :size        => Scale.size_continuous(),
+        :group       => Scale.group_discrete(),
+        :label       => Scale.label()
+    ),
+
+    :categorical => Dict{Symbol, Any}(
+        :x          => Scale.x_discrete(),
+        :xmin       => Scale.x_discrete(),
+        :xmax       => Scale.x_discrete(),
+        :xintercept => Scale.x_discrete(),
+        :xend       => Scale.x_discrete(),
+        :yend       => Scale.y_discrete(),
+        :y          => Scale.y_discrete(),
+        :ymin       => Scale.y_discrete(),
+        :ymax       => Scale.y_discrete(),
+        :yintercept => Scale.y_discrete(),
+        :xgroup     => Scale.xgroup(),
+        :ygroup     => Scale.ygroup(),
+        :shape      => Scale.shape_discrete(),
+        :size       => Scale.size_discrete(),
+        :group      => Scale.group_discrete(),
+        :label      => Scale.label()
+    )
+)
+
+
+get_scale(::Val{t}, ::Val{var}, theme::Theme) where {t,var} = default_aes_scales[t][var]
+get_scale(t::Symbol, var::Symbol, theme::Theme) = get_scale(Val{t}(), Val{var}(), theme)
+
+### Override default getters for color scales
+get_scale(::Val{:categorical}, ::Val{:color}, theme::Theme=current_theme()) =
+        theme.discrete_color_scale
+get_scale(::Val{:numerical}, ::Val{:color}, theme::Theme=current_theme()) =
+        theme.continuous_color_scale
+
+
+function scale_exists(t::Symbol, var::Symbol)
+    if !haskey(default_aes_scales, t) || !haskey(default_aes_scales[t], var)
+        method = methods(get_scale, (Val{t}, Val{var}, Theme))
+        catchall = methods(get_scale, (Val{1}, Val{nothing}, Theme))
+        first(method) !== first(catchall)
+    else
+        true
+    end
+end
 
 
 # Determine whether the input is categorical or numerical
 
-typealias CategoricalType @compat(Union{AbstractString, Bool, Symbol})
+const CategoricalType = Union{AbstractString, Bool, Symbol}
 
-
-function classify_data{N, T <: CategoricalType}(data::AbstractArray{T, N})
-    :categorical
-end
-
-function classify_data{N, T <: Base.Callable}(data::AbstractArray{T, N})
-    :functional
-end
-
-function classify_data{T <: Base.Callable}(data::T)
-    :functional
-end
+classify_data(data::AbstractArray{T, N}) where {N, T <: Union{CategoricalType,Missing}}        = :categorical
+classify_data(data::AbstractArray{T, N}) where {N, T <: Union{Base.Callable,Measure,Colorant}} = :functional
+classify_data(data::CategoricalArray) = :categorical
+classify_data(data::T) where {T <: Base.Callable} = :functional
+classify_data(data::AbstractArray) = :numerical
+classify_data(data::Distribution) = :distribution
 
 function classify_data(data::AbstractArray{Any})
     for val in data
@@ -1096,22 +1239,9 @@ function classify_data(data::AbstractArray{Any})
     :numerical
 end
 
-function classify_data(data::AbstractArray)
-    :numerical
-end
-
-function classify_data(data::Distribution)
-    :distribution
-end
-
 # Axis labels are taken whatever is mapped to these aesthetics, in order of
 # preference.
 const x_axis_label_aesthetics = [:x, :xmin, :xmax]
 const y_axis_label_aesthetics = [:y, :ymin, :ymax]
-
-if VERSION >= v"0.4.0-dev+5512"
-    include("precompile.jl")
-    _precompile_()
-end
 
 end # module Gadfly

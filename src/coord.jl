@@ -1,4 +1,3 @@
-
 module Coord
 
 using Gadfly
@@ -6,7 +5,6 @@ using Compat
 using Compose
 using DataArrays
 import Gadfly.Maybe
-import Iterators: cycle
 
 export cartesian
 
@@ -21,7 +19,7 @@ export cartesian
 #     from the data.
 #
 #
-immutable Cartesian <: Gadfly.CoordinateElement
+struct Cartesian <: Gadfly.CoordinateElement
     xvars::Vector{Symbol}
     yvars::Vector{Symbol}
     xmin
@@ -31,24 +29,23 @@ immutable Cartesian <: Gadfly.CoordinateElement
     xflip::Bool
     yflip::Bool
     fixed::Bool
-    aspect_ratio::@compat(Union{(@compat Void), Float64})
+    aspect_ratio::Union{(Void), Float64}
     raster::Bool
 
-    function Cartesian(
-            xvars=[:x, :xmin, :xmax, :xintercept],
-            yvars=[:y, :ymin, :ymax, :yintercept, :middle,
-                   :lower_hinge, :upper_hinge, :lower_fence, :upper_fence, :outliers];
-            xflip::Bool=false, yflip::Bool=false,
-            xmin=nothing, xmax=nothing, ymin=nothing, ymax=nothing,
-            fixed=false, aspect_ratio=nothing, raster=false)
-        if isa(aspect_ratio, Real)
-            aspect_ratio = convert(Float64, aspect_ratio)
-        end
-        new(xvars, yvars, xmin, xmax, ymin, ymax, xflip, yflip, fixed,
-            aspect_ratio, raster)
-    end
+    Cartesian(xvars, yvars, xmin, xmax, ymin, ymax, xflip, yflip, fixed, aspect_ratio, raster) =
+            new(xvars, yvars, xmin, xmax, ymin, ymax, xflip, yflip, fixed,
+                isa(aspect_ratio, Real) ? Float64(aspect_ratio) : aspect_ratio, raster)
 end
 
+function Cartesian(
+        xvars=[:x, :xmin, :xmax, :xintercept],
+        yvars=[:y, :ymin, :ymax, :yintercept, :middle,
+               :lower_hinge, :upper_hinge, :lower_fence, :upper_fence, :outliers];
+        xflip=false, yflip=false,
+        xmin=nothing, xmax=nothing, ymin=nothing, ymax=nothing,
+        fixed=false, aspect_ratio=nothing, raster=false)
+    Cartesian(xvars, yvars, xmin, xmax, ymin, ymax, xflip, yflip, fixed, aspect_ratio, raster)
+end
 
 const cartesian = Cartesian
 
@@ -62,15 +59,12 @@ const cartesian = Cartesian
 # Returns:
 #   A concrete value if one is found, otherwise nothing.
 #
-function first_concrete_aesthetic_value(aess::Vector{Gadfly.Aesthetics},
-                                        vars::Vector{Symbol})
+function first_concrete_aesthetic_value(aess::Vector{Gadfly.Aesthetics}, vars::Vector{Symbol})
     T = aesthetics_type(aess, vars)
     for var in vars
         for aes in aess
             vals = getfield(aes, var)
-            if vals === nothing
-                continue
-            end
+            vals === nothing && continue
 
             if !isa(vals, AbstractArray)
                 vals = [vals]
@@ -79,18 +73,14 @@ function first_concrete_aesthetic_value(aess::Vector{Gadfly.Aesthetics},
             if var == :outliers
                 for outlier_vals in aes.outliers
                     for val in outlier_vals
-                        if Gadfly.isconcrete(val)
-                            return convert(T, val)
-                        end
+                        Gadfly.isconcrete(val) && return convert(T, val)
                     end
                 end
                 continue
             end
 
             for val in vals
-                if Gadfly.isconcrete(val)
-                    return convert(T, val)
-                end
+                Gadfly.isconcrete(val) && return convert(T, val)
             end
         end
     end
@@ -109,13 +99,11 @@ end
 #   A common type.
 function aesthetics_type(aess::Vector{Gadfly.Aesthetics},
                               vars::Vector{Symbol})
-    T = @compat(Union{})
+    T = Union{}
     for var in vars
         for aes in aess
             vals = getfield(aes, var)
-            if vals === nothing
-                continue
-            end
+            vals === nothing && continue
 
             if var == :outliers
                 if !isempty(vals)
@@ -166,9 +154,7 @@ function apply_coordinate(coord::Cartesian, aess::Vector{Gadfly.Aesthetics},
         for var in coord.xvars
             for aes in aess
                 vals = getfield(aes, var)
-                if vals === nothing
-                    continue
-                end
+                vals === nothing && continue
 
                 if !isa(vals, AbstractArray)
                     vals = [vals]
@@ -184,16 +170,13 @@ function apply_coordinate(coord::Cartesian, aess::Vector{Gadfly.Aesthetics},
         for var in coord.yvars
             for aes in aess
                 vals = getfield(aes, var)
-                if vals === nothing
-                    continue
-                end
+                vals === nothing && continue
 
                 # Outliers is an odd aesthetic that needs special treatment.
                 if var == :outliers
                     for outlier_vals in aes.outliers
                         ymin, ymax = Gadfly.concrete_minmax(outlier_vals, ymin, ymax)
                     end
-
                     continue
                 end
 
@@ -279,7 +262,7 @@ function apply_coordinate(coord::Cartesian, aess::Vector{Gadfly.Aesthetics},
 end
 
 
-immutable SubplotGrid <: Gadfly.CoordinateElement
+struct SubplotGrid <: Gadfly.CoordinateElement
 end
 
 

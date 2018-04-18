@@ -1,7 +1,4 @@
-
-
 # Particularly useful or beautiful grammar of graphics invocations.
-
 
 # A convenience plot function for quickly plotting functions or expressions.
 #
@@ -15,16 +12,7 @@
 # Returns:
 #   A plot objects.
 #
-function plot{T <: Base.Callable}(fs::Vector{T}, a, b, elements::ElementOrFunction...; mapping...)
-    # Catch a common misuse of this function
-    if isa(b, ElementOrFunction)
-        error(
-        """
-        Invalid plot usage:
-            plot(xs, ys, ...) should be plot(x=xs, y=ys, ...)
-        """)
-    end
-
+function plot(fs::Vector{T}, a::Number, b::Number, elements::ElementOrFunction...; mapping...) where T <: Base.Callable
     if isempty(elements)
         elements = ElementOrFunction[]
     elseif isa(elements, Tuple)
@@ -45,7 +33,7 @@ function plot{T <: Base.Callable}(fs::Vector{T}, a, b, elements::ElementOrFuncti
         push!(elements, Coord.cartesian(xflip=true))
     end
 
-    mappingdict = @compat Dict{Symbol, Any}(:y => fs, :xmin => [a], :xmax => [b])
+    mappingdict = Dict{Symbol, Any}(:y => fs, :xmin => [a], :xmax => [b])
     for (k, v) in mapping
         mappingdict[k] = v
     end
@@ -55,13 +43,12 @@ end
 
 
 # Plot a single function.
-function plot(f::Function, a, b, elements::ElementOrFunction...; mapping...)
-    plot(Function[f], a, b, elements...; mapping...)
-end
+plot(f::Function, a::Number, b::Number, elements::ElementOrFunction...; mapping...) =
+        plot(Function[f], a, b, elements...; mapping...)
 
 
 # Plot a single function using a contour plot
-function plot(f::Function, xmin, xmax, ymin, ymax,
+function plot(f::Function, xmin::Number, xmax::Number, ymin::Number, ymax::Number,
               elements::ElementOrFunction...; mapping...)
     default_elements = ElementOrFunction[]
     element_types = Set(map(typeof, elements))
@@ -75,7 +62,7 @@ function plot(f::Function, xmin, xmax, ymin, ymax,
     end
 
     if !in(Guide.ColorKey, element_types) && !in(Guide.ManualColorKey, element_types)
-        push!(default_elements, Guide.colorkey("f(x,y)"))
+        push!(default_elements, Guide.colorkey(title="f(x,y)"))
     end
 
     push!(default_elements, Coord.cartesian(xflip=xmin > xmax, yflip=ymin > ymax))
@@ -85,7 +72,7 @@ function plot(f::Function, xmin, xmax, ymin, ymax,
 end
 
 
-function layer(f::Function, xmin, xmax, ymin, ymax,
+function layer(f::Function, xmin::Number, xmax::Number, ymin::Number, ymax::Number,
                elements::ElementOrFunction...; mapping...)
     if isempty(elements)
         elements = ElementOrFunction[]
@@ -94,7 +81,7 @@ function layer(f::Function, xmin, xmax, ymin, ymax,
     end
 
 
-    mappingdict = @compat Dict{Symbol, Any}(:z    => f, :xmin => [xmin], :xmax => [xmax],
+    mappingdict = Dict{Symbol, Any}(:z    => f, :xmin => [xmin], :xmax => [xmax],
                                             :ymin => [ymin], :ymax => [ymax])
     for (k, v) in mapping
         mappingdict[k] = v
@@ -106,18 +93,28 @@ end
 
 
 # Create a layer from a list of functions or expressions.
-function layer(fs::Array, a, b, elements::ElementOrFunction...)
-    layer(y=fs, xmin=[a], xmax=[b], Stat.func, Geom.line, elements...)
-end
+layer(fs::Array, a::Number, b::Number, elements::ElementOrFunction...) =
+        layer(y=fs, xmin=[a], xmax=[b], Stat.func, Geom.line, elements...)
+
 
 
 # Create a layer from a single function.
-function layer(f::Function, a, b, elements::ElementOrFunction...)
-    layer([f], a, b, elements...)
-end
+layer(f::Function, a::Number, b::Number, elements::ElementOrFunction...) =
+        layer(Function[f], a, b, elements...)
 
 
 # Simple heatmap plots of matrices.
+#
+# It is a wrapper around the `plot()` function using the `rectbin` geometry.
+# It also applies a sane set of defaults to make sure that the plots look nice
+# by default. Specifically
+#   - the aspect ratio of the coordinate system is fixed Coord.cartesian(fixed=true),
+#     so that the rectangles become squares
+#   - the axes run from 0.5 to N+0.5, because the first row/column is drawn to
+#     (0.5, 1.5) and the last one to (N-0.5, N+0.5).
+#   - the y-direction is flipped, so that the [1,1] of a matrix is in the top
+#     left corner, as is customary
+#   - NaNs are not drawn. `spy` leaves "holes" instead into the heatmap.
 #
 # Args:
 #   M: A matrix.
@@ -125,18 +122,78 @@ end
 # Returns:
 #   A plot object.
 #
+# Known bugs:
+#   - If the matrix is only NaNs, then it throws an `ArgumentError`, because
+#     an empty collection gets passed to the `plot` function / `rectbin` geometry.
+#
+"""
+```
+spy(M::AbstractMatrix, elements::ElementOrFunction...; mapping...)
+```
+Simple heatmap plots of matrices.
+
+It is a wrapper around the `plot()` function using the `rectbin` geometry.
+It also applies a sane set of defaults to make sure that the plots look nice
+by default. Specifically
+- the aspect ratio of the coordinate system is fixed Coord.cartesian(fixed=true),
+so that the rectangles become squares
+- the axes run from 0.5 to N+0.5, because the first row/column is drawn to
+(0.5, 1.5) and the last one to (N-0.5, N+0.5).
+- the y-direction is flipped, so that the [1,1] of a matrix is in the top
+left corner, as is customary
+- NaNs are not drawn. `spy` leaves "holes" instead into the heatmap.
+
+### Args:
+* M: A matrix.
+
+### Returns:
+A plot object.
+
+#### Known bugs:
+   - If the matrix is only NaNs, then it throws an `ArgumentError`, because
+     an empty collection gets passed to the `plot` function / `rectbin` geometry.
+"""
+
 function spy(M::AbstractMatrix, elements::ElementOrFunction...; mapping...)
-    is, js, values = findnz(M)
-    df = DataFrame(i=is, j=js, value=values)
-    plot(df, x="j", y="i", color="value",
-         Coord.cartesian(yflip=true),
-         Scale.color_continuous,
-         Scale.x_continuous,
-         Scale.y_continuous,
-         Stat.rectbin,
-         Geom.rectbin,
-         elements...;
-         mapping...)
+    is, js, values = _findnz(x->!isnan(x), M)
+    n,m = size(M)
+    df = DataFrames.DataFrame(i=is, j=js, value=values)
+    plot(df, x=:j, y=:i, color=:value,
+        Coord.cartesian(yflip=true, fixed=true, xmin=0.5, xmax=m+.5, ymin=0.5, ymax=n+.5),
+        Scale.color_continuous,
+        Geom.rectbin,
+        Scale.x_continuous,
+        Scale.y_continuous,
+        elements...; mapping...)
 end
 
-
+# Finds the subscripts and values where the predicate returns true.
+#
+# It takes a predicate (`testf`), a matrix (`A`) and returns a tuple `(is, js, zs)`,
+# where `is`,'js' and 'zs' are arrays of subscripts and values where the predicate
+# returned true.
+#
+# This function is used by spy()
+# Hopefully at some point something like this will be in the standard library
+# and then this can be removed (https://github.com/JuliaLang/julia/pull/9340).
+#
+function _findnz(testf::Function, A::AbstractMatrix{T}) where T
+    N = Base.count(testf, A)
+    is = zeros(Int, N)
+    js = zeros(Int, N)
+    zs = Array{T}(N)
+    if N == 0
+        return (is, js, zs)
+    end
+    count = 1
+    for j=1:size(A,2), i=1:size(A,1)
+        Aij = A[i,j]
+        if testf(Aij)
+            is[count] = i
+            js[count] = j
+            zs[count] = Aij
+            count += 1
+        end
+    end
+    return (is, js, zs)
+end

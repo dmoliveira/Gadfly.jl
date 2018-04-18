@@ -1,11 +1,12 @@
-
-immutable BoxplotGeometry <: Gadfly.GeometryElement
+struct BoxplotGeometry <: Gadfly.GeometryElement
+    default_statistic::Gadfly.StatisticElement
+    suppress_outliers::Bool
     tag::Symbol
-
-    function BoxplotGeometry(; tag::Symbol=empty_tag)
-        new(tag)
-    end
 end
+
+
+BoxplotGeometry(; method=:tukey, suppress_outliers=false, tag=empty_tag) =
+    BoxplotGeometry(Gadfly.Stat.boxplot(method=method), suppress_outliers, tag)
 
 
 const boxplot = BoxplotGeometry
@@ -15,7 +16,7 @@ element_aesthetics(::BoxplotGeometry) = [:x, :y, :color,
                                          :upper_fence, :lower_fence,
                                          :upper_hinge, :lower_hinge]
 
-default_statistic(::BoxplotGeometry) = Gadfly.Stat.boxplot()
+default_statistic(geom::BoxplotGeometry) = geom.default_statistic
 
 function render(geom::BoxplotGeometry, theme::Gadfly.Theme, aes::Gadfly.Aesthetics)
     Gadfly.assert_aesthetics_defined("Geom.bar", aes,
@@ -26,7 +27,7 @@ function render(geom::BoxplotGeometry, theme::Gadfly.Theme, aes::Gadfly.Aestheti
                                      :upper_hinge, :upper_fence, :outliers)
 
     default_aes = Gadfly.Aesthetics()
-    default_aes.color = PooledDataArray(RGB{Float32}[theme.default_color])
+    default_aes.color = discretize_make_ia(RGB{Float32}[theme.default_color])
     default_aes.x = Float64[0.5]
     aes = inherit(aes, default_aes)
 
@@ -34,7 +35,9 @@ function render(geom::BoxplotGeometry, theme::Gadfly.Theme, aes::Gadfly.Aestheti
 
     bw = 1w / n - theme.boxplot_spacing # boxplot width
     if length(aes.x) > 1
-        minspan = minimum([xj - xi for (xi, xj) in zip(aes.x, aes.x[2:end])])
+        xs_sorted = sort(aes.x)
+        minspan = minimum([xj - xi for (xi, xj) in zip(xs_sorted[1:end-1],
+                                                       xs_sorted[2:end])])
         bw = minspan*cx - theme.boxplot_spacing
     end
 
@@ -109,14 +112,13 @@ function render(geom::BoxplotGeometry, theme::Gadfly.Theme, aes::Gadfly.Aestheti
         svgclass("geometry"))
 
     # Outliers
-    if aes.outliers != nothing && !isempty(aes.outliers)
+    if !geom.suppress_outliers && aes.outliers != nothing && !isempty(aes.outliers)
         xys = collect(chain([zip(cycle([x]), ys, cycle([c]))
                              for (x, ys, c) in zip(xs, aes.outliers, cs)]...))
-        compose!(ctx,
-            (context(),
-             circle([x for (x, y, c) in xys],
+        compose!(ctx, (context(),
+            (context(), Shape.circle([x for (x, y, c) in xys],
                     [y for (x, y, c) in xys],
-                    [theme.default_point_size], to),
+                    [theme.point_size], to), svgclass("marker")),
              stroke([theme.discrete_highlight_color(c) for (x, y, c) in xys]),
              fill([c for (x, y, c) in xys])))
     end

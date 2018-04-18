@@ -1,6 +1,6 @@
-
 # Line geometry connects (x, y) coordinates with lines.
-immutable LineGeometry <: Gadfly.GeometryElement
+
+struct LineGeometry <: Gadfly.GeometryElement
     default_statistic::Gadfly.StatisticElement
 
     # Do not reorder points along the x-axis.
@@ -9,54 +9,38 @@ immutable LineGeometry <: Gadfly.GeometryElement
     order::Int
 
     tag::Symbol
-
-    function LineGeometry(default_statistic=Gadfly.Stat.identity();
-                          preserve_order=false, order=2, tag=empty_tag)
-        new(default_statistic, preserve_order, order, tag)
-    end
 end
 
+function LineGeometry(default_statistic=Gadfly.Stat.identity();
+                      preserve_order=false, order=2, tag=empty_tag)
+    LineGeometry(default_statistic, preserve_order, order, tag)
+end
 
 const line = LineGeometry
-
 
 function contour(; levels=15, samples=150, preserve_order=true)
     return LineGeometry(Gadfly.Stat.contour(levels=levels, samples=samples),
                                             preserve_order=preserve_order)
 end
 
-
 # Only allowing identity statistic in paths b/c I don't think any
 # any of the others will work with `preserve_order=true` right now
-function path()
-    return LineGeometry(preserve_order=true)
-end
+path() = LineGeometry(preserve_order=true)
 
-function density()
-    return LineGeometry(Gadfly.Stat.density())
-end
+density(; bandwidth::Real=-Inf) =
+    LineGeometry(Gadfly.Stat.density(bandwidth=bandwidth))
 
+density2d(; bandwidth::Tuple{Real,Real}=(-Inf,-Inf), levels=15) =
+    LineGeometry(Gadfly.Stat.density2d(bandwidth=bandwidth, levels=levels); preserve_order=true)
 
-function smooth(; method::Symbol=:loess, smoothing::Float64=0.75)
-    return LineGeometry(Gadfly.Stat.smooth(method=method, smoothing=smoothing),
-                        order=5)
-end
+smooth(; method::Symbol=:loess, smoothing::Float64=0.75) =
+    LineGeometry(Gadfly.Stat.smooth(method=method, smoothing=smoothing), order=5)
 
+step(; direction::Symbol=:hv) = LineGeometry(Gadfly.Stat.step(direction=direction))
 
-function step(; direction::Symbol=:hv)
-    return LineGeometry(Gadfly.Stat.step(direction=direction))
-end
+default_statistic(geom::LineGeometry) = geom.default_statistic
 
-
-function default_statistic(geom::LineGeometry)
-    return geom.default_statistic
-end
-
-
-function element_aesthetics(::LineGeometry)
-    return [:x, :y, :color, :group]
-end
-
+element_aesthetics(::LineGeometry) = [:x, :y, :color, :group]
 
 # Render line geometry.
 #
@@ -74,12 +58,12 @@ function render(geom::LineGeometry, theme::Gadfly.Theme, aes::Gadfly.Aesthetics)
                                           element_aesthetics(geom)...)
 
     default_aes = Gadfly.Aesthetics()
-    default_aes.color = PooledDataArray(RGBA{Float32}[theme.default_color])
+    default_aes.color = discretize_make_ia(RGBA{Float32}[theme.default_color])
     aes = inherit(aes, default_aes)
 
     ctx = context(order=geom.order)
     XT, YT, CT = eltype(aes.x), eltype(aes.y), eltype(aes.color)
-    XYT = @compat Tuple{XT, YT}
+    XYT = Tuple{XT, YT}
 
     line_style = Gadfly.get_stroke_vector(theme.line_style)
 
@@ -105,7 +89,7 @@ function render(geom::LineGeometry, theme::Gadfly.Theme, aes::Gadfly.Aesthetics)
         elseif length(aes_color) > length(aes_group)
             p = sortperm(aes_color, lt=Gadfly.color_isless)
         else
-            p = sortperm(collect((@compat Tuple{GT, CT}),zip(aes_group, aes_color)),
+            p = sortperm(collect((Tuple{GT, CT}),zip(aes_group, aes_color)),
                          lt=Gadfly.group_color_isless)
         end
         permute!(aes_group, p)
@@ -138,25 +122,23 @@ function render(geom::LineGeometry, theme::Gadfly.Theme, aes::Gadfly.Aesthetics)
             push!(points[end], (x, y))
         end
 
-        classes = [string("geometry ", svg_color_class_from_label(aes.color_label([c])[1]))
+        classes = [svg_color_class_from_label(aes.color_label([c])[1])
                    for (c, g) in zip(points_colors, points_groups)]
 
-        ctx = compose!(ctx, Compose.line(points,geom.tag),
-                      stroke(points_colors),
-                      strokedash(line_style),
-                      svgclass(classes))
+        ctx = compose!(ctx, (context(), Compose.line(points,geom.tag),
+                        stroke(points_colors),
+                        strokedash(line_style),
+                        svgclass(classes)),
+                      svgclass("geometry"))
 
     elseif length(aes.color) == 1 &&
-            !(isa(aes.color, PooledDataArray) && length(levels(aes.color)) > 1)
-        T = (@compat Tuple{eltype(aes.x), eltype(aes.y)})
+            !(isa(aes.color, IndirectArray) && count(!ismissing, aes.color.values) > 1)
+        T = (Tuple{eltype(aes.x), eltype(aes.y)})
         points = T[(x, y) for (x, y) in zip(aes.x, aes.y)]
-        if !geom.preserve_order
-            sort!(points, by=first)
-        end
-
-        ctx = compose!(ctx, Compose.line(points,geom.tag),
+        geom.preserve_order || sort!(points, by=first)
+        ctx = compose!(ctx, (context(), Compose.line([points],geom.tag),
                        stroke(aes.color[1]),
-                       strokedash(line_style),
+                       strokedash(line_style)),
                        svgclass("geometry"))
     else
         if !geom.preserve_order
@@ -199,13 +181,14 @@ function render(geom::LineGeometry, theme::Gadfly.Theme, aes::Gadfly.Aesthetics)
             push!(points[end], (x, y))
         end
 
-        classes = [string("geometry ", svg_color_class_from_label(aes.color_label([c])[1]))
+        classes = [svg_color_class_from_label(aes.color_label([c])[1])
                    for c in points_colors]
 
-        ctx = compose!(ctx, Compose.line(points,geom.tag),
-                      stroke(points_colors),
-                      strokedash(line_style),
-                      svgclass(classes))
+        ctx = compose!(ctx, (context(), Compose.line(points,geom.tag),
+                        stroke(points_colors),
+                        strokedash(line_style),
+                        svgclass(classes)),
+                      svgclass("geometry"))
     end
 
     return compose!(ctx, fill(nothing), linewidth(theme.line_width))
